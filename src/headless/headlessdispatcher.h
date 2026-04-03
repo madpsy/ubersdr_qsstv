@@ -45,7 +45,18 @@ private slots:
 
 private:
   headlessRxController *rxCtrl;
+
+  // lastCallsign is the callsign that will be used when the image is saved.
+  // It is populated either from the FSK-ID preamble (via preambleCallsign,
+  // transferred at startImageRX time) or from the FSK-ID trailer (set
+  // directly in slotCallReceived when a deferred save is pending).
   QString lastCallsign;
+
+  // preambleCallsign holds a callsign decoded from the FSK-ID preamble that
+  // arrived *before* the image started.  It is transferred into lastCallsign
+  // at startImageRX time and cleared, so it survives the lastCallsign.clear()
+  // that used to discard it.
+  QString preambleCallsign;
 
   // Deferred-save state: set on endSSTVImageRX, consumed by slotSavePending().
   // Allows the FSK-ID trailer (which arrives after the image) to be captured

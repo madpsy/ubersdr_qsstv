@@ -68,14 +68,28 @@ void headlessDispatcher::logSSTV(const QString &call, bool fromFSKID)
 
 void headlessDispatcher::slotCallReceived(const QString &call)
 {
-  logSSTV(call, true);  // sets lastCallsign, emits rx_callsign event
-
-  // If a deferred save is pending (image received, waiting for FSK-ID trailer),
-  // cancel the timer and save immediately now that the callsign has arrived.
   if (saveTimer && saveTimer->isActive())
   {
+    // A deferred save is pending — this is the FSK-ID *trailer* arriving after
+    // the image ended.  Save immediately with this callsign.
+    logSSTV(call, true);  // sets lastCallsign, emits rx_callsign event
     saveTimer->stop();
     slotSavePending();
+  }
+  else
+  {
+    // No save is pending — this is the FSK-ID *preamble* arriving before or
+    // during the image.  Store it in preambleCallsign so it survives the
+    // lastCallsign.clear() that fires at startImageRX time.
+    // Also emit rx_callsign immediately so the web UI can show the callsign
+    // while the image is still being decoded (mirrors the trailer path).
+    preambleCallsign = call;
+    qInfo() << "headlessDispatcher: FSK-ID preamble callsign received:" << call;
+    QJsonObject j;
+    j["event"]     = "rx_callsign";
+    j["callsign"]  = call;
+    j["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    writeHeadlessEvent(j);
   }
 }
 
@@ -162,7 +176,12 @@ void headlessDispatcher::customEvent(QEvent *e)
       auto *ev = static_cast<startImageRXEvent *>(e);
       rxCtrl->createImage(ev->getSize(), imageBackGroundColor);
       lineDisplayCounter = 0;  // reset partial-preview counter for new image
-      lastCallsign.clear();    // new image, new callsign window
+      // Transfer any preamble callsign that arrived before the image started.
+      // Previously this was lastCallsign.clear(), which discarded the preamble
+      // callsign decoded from the FSK-ID sent before the VIS code.  Now we
+      // carry it forward so it is available when the image is saved.
+      lastCallsign = preambleCallsign;
+      preambleCallsign.clear();
       qInfo() << "headlessDispatcher: startImageRX size=" << ev->getSize()
               << "mode=" << getSSTVModeNameShort(ev->getMode());
       {
