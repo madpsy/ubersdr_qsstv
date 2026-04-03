@@ -173,11 +173,11 @@ func (h *fftBroadcastHub) hasListeners() bool {
 // audioPrerollChunks is the number of recent PCM chunks kept in the ring
 // buffer and replayed to each new subscriber so the browser can start
 // playing immediately without waiting for its internal buffer to fill.
-// At ~200 ms per chunk (AUDIO_CHUNK_BYTES = 4410 at 11025 Hz) this is ~1 s.
-// Keep this small: a large pre-roll burst causes the client scheduler to
-// queue many chunks at once, making audioNextTime jump far ahead and
-// producing choppy / overlapping audio.
-const audioPrerollChunks = 5
+// At ~200 ms per chunk (AUDIO_CHUNK_BYTES = 4410 at 11025 Hz) this is ~200 ms.
+// Keep this at 1: the client discards pre-roll chunks and starts its clock
+// only from the first live chunk, so a larger value just adds stale audio
+// that causes a content discontinuity (stutter) at the pre-roll/live boundary.
+const audioPrerollChunks = 1
 
 type audioBroadcastHub struct {
 	mu      sync.Mutex

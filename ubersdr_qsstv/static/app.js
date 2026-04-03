@@ -224,13 +224,19 @@ let squelchAboveTimer = null;  // setTimeout handle — fires when hold period e
 let audioOutputDeviceId = ''; // selected sink device id (Chrome/Edge only)
 
 // Web Audio streaming state
-let audioCtx = null;         // AudioContext (created on first user gesture)
+let audioCtx = null;         // AudioContext (created on first user gesture, reused across reconnects)
 let audioGain = null;        // GainNode for mute/unmute
 let audioFetchCtrl = null;   // AbortController for the fetch stream
 let audioNextTime = 0;       // AudioContext time to schedule the next buffer
 let audioSampleRate = 0;     // sample rate parsed from WAV header
 let audioHeaderParsed = false; // true once the 44-byte WAV header has been consumed
 let audioAccum = new Uint8Array(0); // accumulator for partial PCM data
+// Generation counter — incremented on every startAudioPreview() call.
+// Captured synchronously in schedulePCMChunk() and checked in the async
+// decodeAudioData callback to discard stale decodes from a previous stream.
+// Replaces the old capturedCtx !== audioCtx identity check, which no longer
+// works now that the AudioContext is reused across reconnects.
+let audioStreamGen = 0;
 
 // Live SNR sparkline state
 const LIVE_SNR_MAX_POINTS = 120; // 30 s at 250 ms cadence
@@ -1290,55 +1296,92 @@ function renderMap(rec) {
 // Minimum seconds of audio to pre-buffer before we start the clock.
 // Keeps scheduling ahead of the playhead to avoid glitches.
 const AUDIO_SCHEDULE_AHEAD_S = 0.1;
+// Maximum seconds the scheduler is allowed to run ahead of the playhead.
+// Prevents a pre-roll burst from pushing audioNextTime so far ahead that
+// there is a long gap before live audio is heard.
+const AUDIO_MAX_LEAD_S = 0.4;
 // How many PCM bytes to accumulate before decoding one chunk.
 // At 11025 Hz mono S16LE: 4410 bytes ≈ 200 ms.  Tune for latency vs. glitch.
 const AUDIO_CHUNK_BYTES = 4410;
+// Number of pre-roll chunks the server sends at the start of each connection
+// (must match audioPrerollChunks in instance.go).  These chunks are stale PCM
+// from the ring buffer; we discard them so only live audio enters the timeline.
+const AUDIO_PREROLL_CHUNKS = 1;
+
+// How many pre-roll chunks remain to be discarded for the current connection.
+let audioPrerollRemaining = 0;
 
 function stopAudioPreview() {
   if (audioFetchCtrl) {
     audioFetchCtrl.abort();
     audioFetchCtrl = null;
   }
+  // Invalidate any in-flight decodeAudioData callbacks from the current stream.
+  audioStreamGen++;
+  // Suspend (don't close) the AudioContext so currentTime keeps advancing
+  // monotonically across reconnects.  A closed context resets currentTime to 0,
+  // which breaks the audioNextTime < now guard in schedulePCMChunk().
   if (audioCtx) {
-    audioCtx.close().catch(() => {});
-    audioCtx = null;
-    audioGain = null;
+    audioCtx.suspend().catch(() => {});
+    // Keep audioCtx and audioGain alive — they are reused on the next
+    // startAudioPreview() call (same user gesture, same context).
   }
   audioPreviewEl = null;
-  audioNextTime = 0;
   audioSampleRate = 0;
   audioHeaderParsed = false;
   audioAccum = new Uint8Array(0);
+  audioPrerollRemaining = 0;
 }
 
 function startAudioPreview(label) {
-  stopAudioPreview();
+  // Abort any in-flight fetch but keep the AudioContext alive.
+  if (audioFetchCtrl) {
+    audioFetchCtrl.abort();
+    audioFetchCtrl = null;
+  }
+  // Reset per-stream state without touching the AudioContext.
+  audioPreviewEl = null;
+  audioSampleRate = 0;
+  audioHeaderParsed = false;
+  audioAccum = new Uint8Array(0);
+  // audioNextTime is intentionally NOT reset here: keeping it at its current
+  // value (or letting the < now guard reset it) avoids scheduling new chunks
+  // in the past when the AudioContext currentTime has advanced.
+  audioPrerollRemaining = AUDIO_PREROLL_CHUNKS;
+
+  // Increment the generation counter so any in-flight decodeAudioData callbacks
+  // from the previous stream know to discard their results.
+  audioStreamGen++;
 
   audioPreviewLabel = label || '';
   const url = '/api/audio/preview' + (audioPreviewLabel ? '?label=' + encodeURIComponent(audioPreviewLabel) : '');
 
-  // Create AudioContext on the user-gesture thread so Chrome allows it.
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  audioGain = audioCtx.createGain();
-  audioGain.connect(audioCtx.destination);
-  applyGain(); // respect current mute + squelch state
-  // Apply selected output device if one was chosen before playback started.
-  if (audioOutputDeviceId && typeof audioCtx.setSinkId === 'function') {
-    audioCtx.setSinkId(audioOutputDeviceId).catch(err => {
-      console.warn('setSinkId on new AudioContext failed:', err);
-    });
+  // Create the AudioContext on the very first call (requires a user gesture).
+  // On subsequent calls (reconnects) we reuse the existing context so that
+  // currentTime is monotonically increasing and the scheduler stays coherent.
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioGain = audioCtx.createGain();
+    audioGain.connect(audioCtx.destination);
+    // Apply selected output device if one was chosen before playback started.
+    if (audioOutputDeviceId && typeof audioCtx.setSinkId === 'function') {
+      audioCtx.setSinkId(audioOutputDeviceId).catch(err => {
+        console.warn('setSinkId on new AudioContext failed:', err);
+      });
+    }
+  } else {
+    // Resume in case it was suspended by a previous stopAudioPreview() call.
+    audioCtx.resume().catch(() => {});
   }
+  applyGain(); // respect current mute + squelch state
+
+  audioPreviewEl = true; // sentinel — non-null means "playing"
 
   // Capture a generation counter so that stream-end / error callbacks from a
   // previous startAudioPreview() call cannot trigger a reconnect after a new
   // call has already started.
   const myCtrl = new AbortController();
   audioFetchCtrl = myCtrl;
-  audioPreviewEl = true; // sentinel — non-null means "playing"
-  audioNextTime = 0;
-  audioSampleRate = 0;
-  audioHeaderParsed = false;
-  audioAccum = new Uint8Array(0);
 
   updateMuteBtn();
 
@@ -1400,8 +1443,9 @@ function processAudioChunk(bytes) {
     audioSampleRate = view.getUint32(24, true);
     audioHeaderParsed = true;
     audioAccum = audioAccum.slice(44); // strip header
-    // Initialise the schedule clock to slightly ahead of now.
-    audioNextTime = audioCtx.currentTime + AUDIO_SCHEDULE_AHEAD_S;
+    // Do NOT set audioNextTime here — it is set in schedulePCMChunk() using
+    // the live AudioContext.currentTime at the moment the first live chunk
+    // (after pre-roll is discarded) is ready to schedule.
   }
 
   // Decode and schedule complete chunks.
@@ -1409,6 +1453,17 @@ function processAudioChunk(bytes) {
   while (audioAccum.length >= chunkBytes) {
     const pcm = audioAccum.slice(0, chunkBytes);
     audioAccum = audioAccum.slice(chunkBytes);
+
+    // Discard pre-roll chunks — they are stale PCM from the server's ring
+    // buffer.  Scheduling them would push audioNextTime ahead by their
+    // duration before any live audio arrives, causing a content discontinuity
+    // (stutter) at the pre-roll/live boundary.
+    if (audioPrerollRemaining > 0) {
+      audioPrerollRemaining--;
+      console.log('[audio] discarding pre-roll chunk (' + (AUDIO_PREROLL_CHUNKS - audioPrerollRemaining) + '/' + AUDIO_PREROLL_CHUNKS + ')');
+      continue;
+    }
+
     schedulePCMChunk(pcm);
   }
 }
@@ -1417,23 +1472,29 @@ function processAudioChunk(bytes) {
 // AudioContext.decodeAudioData, then schedule the resulting AudioBuffer.
 //
 // The start time is assigned SYNCHRONOUSLY at call time so that chunks
-// submitted in a burst (e.g. pre-roll) are always scheduled in order,
-// even if the async decodes complete out of order.  Stale callbacks from
-// a stopped/replaced stream are discarded via the capturedCtx guard.
+// submitted in a burst are always scheduled in order, even if the async
+// decodes complete out of order.  Stale callbacks from a stopped/replaced
+// stream are discarded via the capturedCtx guard.
 function schedulePCMChunk(pcm) {
   if (!audioCtx || !audioGain) return;
   const sr = audioSampleRate || 11025;
 
-  // Capture context + gain at enqueue time.  If stopAudioPreview() fires
-  // while a decode is in-flight, capturedCtx !== audioCtx and the callback
-  // bails out rather than scheduling onto a closed or brand-new AudioContext.
+  // Capture the current AudioContext and generation counter synchronously.
+  // The AudioContext is reused across reconnects (never closed), so we cannot
+  // use capturedCtx !== audioCtx to detect stale callbacks.  Instead we use
+  // audioStreamGen: if it has changed by the time decodeAudioData resolves,
+  // the stream was replaced and we discard the result.
   const capturedCtx  = audioCtx;
   const capturedGain = audioGain;
+  const capturedGen  = audioStreamGen;
 
   // Assign the scheduled start time NOW (synchronously), before the async
   // decode.  This guarantees ordering even when decodes complete out of order.
   const now = capturedCtx.currentTime;
-  if (audioNextTime < now) {
+  // Reset if we've fallen behind the playhead OR if we've run too far ahead
+  // (e.g. after a burst of chunks).  The max-lead cap prevents a pre-roll
+  // burst from pushing audioNextTime so far ahead that live audio is delayed.
+  if (audioNextTime < now || audioNextTime > now + AUDIO_MAX_LEAD_S) {
     audioNextTime = now + AUDIO_SCHEDULE_AHEAD_S;
   }
   // Duration of this chunk in seconds (S16LE mono: 2 bytes per sample).
@@ -1462,8 +1523,10 @@ function schedulePCMChunk(pcm) {
   new Uint8Array(wavBuf, 44).set(pcm);
 
   capturedCtx.decodeAudioData(wavBuf).then(audioBuf => {
-    // Bail out if the stream was stopped or replaced while we were decoding.
-    if (capturedCtx !== audioCtx || capturedGain !== audioGain) return;
+    // Bail out if the stream was replaced while we were decoding.
+    // Use the generation counter rather than object identity because the
+    // AudioContext is reused across reconnects.
+    if (audioStreamGen !== capturedGen) return;
 
     const src = capturedCtx.createBufferSource();
     src.buffer = audioBuf;
