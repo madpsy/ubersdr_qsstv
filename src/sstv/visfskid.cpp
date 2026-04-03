@@ -180,7 +180,9 @@ bool fskIdDecoder::assemble(bool reset)
     {
       if(checksum!=symbol)
         {
+          addToLog("FSK-ID checksum mismatch — discarding",LOGFSKID);
           fskIDStr.clear();
+          return true;  // bad checksum: don't emit empty callsign
         }
       emit callReceived(fskIDStr);
       fskIDStr.clear();
@@ -305,13 +307,23 @@ void fskIdDecoder::extract(unsigned int syncSampleCtr, bool narrow)
           break;
         case WAITEND1900:
           {
-            if((sampleCounter+i-startSampleCounter)>=(FSKBIT/2-avgCount-56))
+            // Wait for the 1900 Hz preamble tone to actually end before starting
+            // the bit clock.  The old code fired after a fixed minimum sample count
+            // (~51 samples / 4 ms) regardless of whether the tone had ended, which
+            // caused random bit-clock phase misalignment.  Using waitEndFreq() with
+            // a generous timeout (10 bit-periods) aligns the bit clock to the real
+            // first bit transition.
+            if(waitEndFreq(1800,2000,FSKBIT*10,timeout))
               {
                 switchState(GETID,i);
                 startSampleCounter=sampleCounter+i;
                 assemble(true);
                 bitCounter=0;
                 symbol=0;
+              }
+            else if(timeout)
+              {
+                switchState(FSKINIT,i);
               }
           }
           break;

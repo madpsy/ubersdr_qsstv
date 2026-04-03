@@ -2143,6 +2143,17 @@ function connectRxLive(label) {
           if (remainingMs === 0) {
             clearInterval(rxLiveCountdownTimer);
             rxLiveCountdownTimer = null;
+            // The image transmission is mathematically complete.  The QSSTV sync
+            // processor may take additional time to declare SYNCLOST (it stays
+            // INSYNC while noise/FSK-ID produces valid-looking sync pulses), so
+            // rx_end from the server may arrive late or not at all.  Stop the
+            // SNR chart from accumulating further and mark reception as done so
+            // the UI doesn't hang indefinitely.  The real rx_end (if it arrives)
+            // will still be processed normally by the rx_end event handler.
+            if (rxLiveActive) {
+              console.warn('[rx] countdown reached 0 but rx_end not yet received — stopping SNR accumulation');
+              rxLiveActive = false;
+            }
           }
         }
         tickCountdown(); // show immediately

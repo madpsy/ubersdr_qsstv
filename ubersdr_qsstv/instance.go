@@ -454,6 +454,9 @@ type imageTracker struct {
 	// Stored here so it is available even if the queued Qt signal fires after
 	// the rx_saved event (cross-thread AutoConnection race in QSSTV).
 	pendingCallsign string
+	// watchdog: cancelled when rx_saved/rx_discarded arrives; fires a synthetic
+	// rx_end to web clients if the QSSTV sync processor never declares SYNCLOST.
+	watchdogCancel context.CancelFunc
 }
 
 func newImageTracker(freqHz int, audioMode, outputDir string, eventCh chan<- imageRecord, rxLiveHub *sseHub, ms *metricsStore) *imageTracker {
@@ -479,6 +482,49 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 		t.rxHeight = ev.Height
 		t.lastLine = 0
 		t.pendingCallsign = ""
+
+		// Cancel any previous watchdog (shouldn't be active, but be safe).
+		if t.watchdogCancel != nil {
+			t.watchdogCancel()
+			t.watchdogCancel = nil
+		}
+
+		// Arm a watchdog timer: if rx_saved/rx_discarded doesn't arrive within
+		// image_time_ms + 10 s, synthesise an rx_end to web clients.  This
+		// handles the case where the QSSTV sync processor stays INSYNC after
+		// the image ends (e.g. noise/FSK-ID keeps producing valid sync pulses),
+		// preventing endSSTVImageRX from ever firing.
+		if ev.ImageTimeMs > 0 && t.rxLiveHub != nil {
+			watchdogMs := ev.ImageTimeMs + 10000
+			ctx, cancel := context.WithCancel(context.Background())
+			t.watchdogCancel = cancel
+			go func() {
+				select {
+				case <-ctx.Done():
+					return // cancelled by rx_saved or rx_discarded
+				case <-time.After(time.Duration(watchdogMs) * time.Millisecond):
+				}
+				log.Printf("imageTracker watchdog: rx_saved never arrived for %s after %d ms — synthesising rx_end to web clients",
+					ev.SSTVMode, watchdogMs)
+				stats := t.accum.stats()
+				payload, _ := json.Marshal(map[string]interface{}{
+					"event":         "rx_end",
+					"sstv_mode":     ev.SSTVMode,
+					"callsign":      t.pendingCallsign,
+					"snr_avg_db":    stats.AvgDB,
+					"snr_min_db":    stats.MinDB,
+					"snr_max_db":    stats.MaxDB,
+					"snr_samples":   stats.SampleCount,
+					"image_height":  t.rxHeight,
+					"lines_decoded": t.lastLine,
+					"rx_end":        time.Now().UnixMilli(),
+					"t":             time.Now().UnixMilli(),
+					"watchdog":      true, // diagnostic flag
+				})
+				t.rxLiveHub.broadcast(fmt.Sprintf("event: rx_end\ndata: %s\n\n", payload))
+			}()
+		}
+
 		// Notify live clients that a new image has started
 		if t.rxLiveHub != nil {
 			p := map[string]interface{}{
@@ -535,6 +581,11 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 		}
 
 	case "rx_saved":
+		// Cancel the watchdog — the real rx_saved arrived in time.
+		if t.watchdogCancel != nil {
+			t.watchdogCancel()
+			t.watchdogCancel = nil
+		}
 		if t.state == imgReceiving {
 			// If QSSTV's queued callsign signal lost the race with rx_saved
 			// (AutoConnection cross-thread delivery), fall back to the callsign
@@ -574,6 +625,11 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 		}
 
 	case "rx_discarded":
+		// Cancel the watchdog — the image was discarded cleanly.
+		if t.watchdogCancel != nil {
+			t.watchdogCancel()
+			t.watchdogCancel = nil
+		}
 		t.state = imgIdle
 		t.pendingCallsign = ""
 		if t.rxLiveHub != nil {
