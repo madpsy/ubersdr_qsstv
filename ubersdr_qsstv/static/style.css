@@ -1,0 +1,1231 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+header h1 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #e94560;
+}
+
+/* ── UberSDR URL widget — always-visible input, mirrors #freq-tune ── */
+#ubersdr-url-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+#ubersdr-url-wrap label {
+  font-size: 0.75rem;
+  color: #888;
+  white-space: nowrap;
+}
+
+#ubersdr-url-input {
+  width: 32ch;
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 0.8rem;
+  font-family: monospace;
+  padding: 3px 6px;
+  transition: border-color 0.15s;
+}
+
+#ubersdr-url-input:focus {
+  border-color: #6fcf97;
+  outline: none;
+}
+
+#ubersdr-url-set-btn {
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 6px;
+  color: #6fcf97;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 3px 8px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+#ubersdr-url-set-btn:hover {
+  background: #1a4731;
+  border-color: #6fcf97;
+}
+
+#ubersdr-url-status {
+  font-size: 0.75rem;
+  min-width: 4ch;
+  white-space: nowrap;
+}
+
+#ubersdr-url-status.url-err { color: #eb5757; }
+#ubersdr-url-status.url-ok  { color: #6fcf97; }
+
+#status-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #0f3460;
+  color: #a0c4ff;
+}
+
+.badge.running  { background: #1a4731; color: #6fcf97; }
+.badge.reconnecting { background: #4a3000; color: #f2c94c; }
+.badge.stopped  { background: #3d1a1a; color: #eb5757; }
+
+/* ── Audio output device selector ── */
+#audio-output-select {
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 6px;
+  color: #a0c4ff;
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 3px 6px;
+  max-width: 160px;
+  flex-shrink: 0;
+  transition: border-color 0.15s;
+}
+
+#audio-output-select:hover,
+#audio-output-select:focus {
+  border-color: #6fcf97;
+  outline: none;
+}
+
+/* ── Audio preview button ── */
+#audio-preview-btn {
+  background: none;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: #888;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 3px 7px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+#audio-preview-btn:hover {
+  border-color: #6fcf97;
+  color: #e0e0e0;
+}
+
+#audio-preview-btn.active {
+  background: #1a4731;
+  border-color: #6fcf97;
+  color: #6fcf97;
+}
+
+/* ── Live SNR bar ── */
+#snr-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  background: #0f3460;
+  border-radius: 8px;
+  padding: 3px 10px 3px 8px;
+}
+
+#snr-bar-label {
+  font-size: 0.7rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+#live-snr-chart {
+  display: block;
+  width: 200px;
+  height: 36px;
+}
+
+#live-snr-value {
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 4.5ch;
+  text-align: right;
+  white-space: nowrap;
+}
+
+#live-dot {
+  font-size: 0.8rem;
+  color: #6fcf97;
+}
+
+#live-dot.offline { color: #eb5757; }
+
+.main-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Gallery ── */
+#gallery-panel {
+  width: 340px;
+  flex-shrink: 0;
+  background: #16213e;
+  border-right: 1px solid #0f3460;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#gallery-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 6px;
+  flex-shrink: 0;
+}
+
+#gallery-header h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #888;
+  margin: 0;
+}
+
+#gallery-complete-label,
+#gallery-show-latest-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  color: #888;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+#gallery-complete-label input[type="checkbox"],
+#gallery-show-latest-label input[type="checkbox"] {
+  accent-color: #6fcf97;
+  cursor: pointer;
+}
+
+#gallery-grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  /* Single column — day groups handle their own 2-col inner grid */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Day group — fieldset-style bordered box with date label ── */
+.day-group {
+  border: 1px solid #1e3a6e;
+  border-radius: 6px;
+  position: relative;
+  padding: 28px 8px 8px;
+}
+
+.day-group-label {
+  position: absolute;
+  top: -1px;
+  left: 10px;
+  background: #16213e;
+  padding: 0 8px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #6a9fd8;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  line-height: 1;
+  /* Sit on top of the border */
+  transform: translateY(-50%);
+}
+
+.day-group-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+#gallery-sentinel {
+  height: 1px;
+  flex-shrink: 0;
+}
+
+.thumb-card {
+  cursor: pointer;
+  border-radius: 6px;
+  /* No overflow:hidden — let the card grow to its natural height so meta is never clipped */
+  background: #0f3460;
+  border: 2px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.thumb-card:hover { border-color: #e94560; }
+.thumb-card.selected { border-color: #e94560; }
+
+.thumb-card img {
+  width: 100%;
+  aspect-ratio: 4/3;
+  object-fit: cover;
+  display: block;
+  background: #0a0a1a;
+  /* Round only the top corners — card border-radius handles the outer shape */
+  border-radius: 4px 4px 0 0;
+}
+
+.thumb-meta {
+  padding: 6px 8px 8px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  background: #0f3460;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  border-radius: 0 0 4px 4px;
+}
+
+.thumb-meta-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+}
+.thumb-meta .mode-group { display: inline-flex; align-items: baseline; gap: 3px; }
+.thumb-meta .mode { color: #a0c4ff; font-weight: 700; }
+.thumb-meta .decode-badge { font-size: 0.8em; line-height: 1; }
+.thumb-meta .call { color: #e0e0e0; font-size: 0.78rem; text-align: right; }
+.thumb-meta .snr  { /* colour applied inline via snrColor() */ }
+.thumb-meta .freq { color: #888; }
+
+/* ── Detail panel ── */
+#detail-panel {
+  flex: 1;
+  min-height: 0;        /* allow flex child to shrink below content size */
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#detail-empty {
+  margin: auto;
+  color: #555;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+#detail-content { display: none; flex-direction: column; gap: 12px; }
+#detail-content.visible { display: flex; }
+
+/* Two-column top row: meta table on left, image on right */
+#detail-top {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+#detail-close-btn {
+  align-self: flex-end;
+  background: none;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: #888;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  transition: border-color 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+#detail-close-btn:hover {
+  border-color: #eb5757;
+  color: #eb5757;
+}
+
+/* Wrapper holds the image and the SNR bar side-by-side */
+#detail-image-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+}
+
+#detail-image {
+  flex: 1;
+  min-width: 0;
+  max-height: 40vh;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid #0f3460;
+  background: #0a0a1a;
+  display: block;
+}
+
+/* Vertical SNR quality bar — sits to the right of the image.
+   align-self:stretch makes it fill the flex row height automatically,
+   so it always matches the image height without JS measurement. */
+#detail-snr-bar,
+#rx-live-snr-bar {
+  width: 10px;
+  flex-shrink: 0;
+  align-self: stretch;
+  border-radius: 4px;
+  display: block;
+}
+
+/* Wrapper that stacks the meta table above the action buttons */
+#detail-meta-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+#detail-meta {
+  background: #16213e;
+  border-radius: 6px;
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  font-size: 0.85rem;
+}
+
+#detail-meta .label { color: #888; }
+#detail-meta .value { color: #e0e0e0; }
+
+/* Save + Delete action row below the metadata table */
+#detail-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#detail-save-btn {
+  display: inline-block;
+  background: #0f3460;
+  border: 1px solid #1e3a6e;
+  border-radius: 6px;
+  color: #a0c4ff;
+  font-size: 0.82rem;
+  padding: 5px 14px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+#detail-save-btn:hover {
+  background: #1a4a8a;
+  border-color: #4a90d9;
+}
+
+#detail-delete-btn {
+  background: none;
+  border: 1px solid #3d1a1a;
+  border-radius: 6px;
+  color: #eb5757;
+  font-size: 0.82rem;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+#detail-delete-btn:hover:not(:disabled) {
+  background: #3d1a1a;
+  border-color: #eb5757;
+}
+
+#detail-delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#snr-chart-container {
+  background: #16213e;
+  border-radius: 6px;
+  padding: 12px;
+  /* Prevent Chart.js responsive resize from growing the container infinitely */
+  max-height: 220px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+#snr-chart-container h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+/* Fixed height canvas — Chart.js reads this via offsetHeight when
+   maintainAspectRatio:false; the container max-height keeps it bounded. */
+#snr-chart { width: 100%; height: 160px; max-height: 160px; flex-shrink: 0; }
+
+#map-container {
+  background: #16213e;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+#map-container h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+#map { width: 100%; height: 220px; border-radius: 4px; }
+
+#map-no-callsign {
+  display: none;
+  color: #555;
+  font-size: 0.85rem;
+  padding: 8px 0;
+}
+
+/* Permanent tooltip on the receiver (📡) marker */
+.rx-tooltip {
+  background: rgba(22, 33, 62, 0.92);
+  border: 1px solid #0f3460;
+  border-radius: 5px;
+  color: #e0e0e0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  padding: 4px 8px;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+}
+.rx-tooltip::before { display: none; }
+
+/* ── Live RX preview panel ── */
+#rx-live-panel {
+  display: none;  /* hidden until an rx_start event arrives */
+  background: #16213e;
+  border-radius: 6px;
+  padding: 12px 16px;
+  flex-shrink: 0;
+}
+
+#rx-live-panel.active {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#rx-live-panel h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #e94560;
+  margin-bottom: 0;
+  flex-shrink: 0;
+}
+
+#rx-live-label {
+  color: #a0c4ff;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+#rx-live-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#rx-live-progress-wrap {
+  flex: 1;
+  height: 4px;
+  background: #0f3460;
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+#rx-live-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: #e94560;
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+
+#rx-live-countdown {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: #a0aec0;
+  min-width: 3.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two-column row: meta table left, image right — mirrors #detail-top */
+#rx-live-top {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+/* Meta table — mirrors #detail-meta */
+#rx-live-meta {
+  background: #0f3460;
+  border-radius: 6px;
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  font-size: 0.85rem;
+}
+
+#rx-live-meta .label { color: #888; }
+#rx-live-meta .value { color: #e0e0e0; }
+
+/* Wrapper holds the stable aspect-ratio box; the <img> fills it via object-fit.
+   This prevents the browser's partial-PNG intrinsic dimensions from causing
+   the box to shrink/grow as the image decodes line-by-line.
+   Also lays out the SNR bar to the right of the image. */
+#rx-live-image-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 4px;
+  background: transparent;
+  /* aspect-ratio is set dynamically from rx_start width/height on the inner img */
+}
+
+#rx-live-image {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  object-fit: contain;
+  object-position: top center; /* SSTV decodes top-to-bottom — anchor to top */
+  image-rendering: pixelated;
+  background: #0a0a1a;
+  border-radius: 4px;
+  border: 1px solid #0f3460;
+}
+
+/* Signal quality chart — mirrors #snr-chart-container */
+#rx-live-snr-container {
+  background: #0f3460;
+  border-radius: 6px;
+  padding: 12px;
+  max-height: 220px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+#rx-live-snr-container h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+#rx-live-snr-chart {
+  width: 100%;
+  height: 160px;
+  max-height: 160px;
+  flex-shrink: 0;
+}
+
+/* Origin map — mirrors #map-container / #map */
+#rx-live-map-container {
+  background: #0f3460;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+#rx-live-map-container h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+#rx-live-map { width: 100%; height: 220px; border-radius: 4px; }
+
+#rx-live-map-no-callsign {
+  color: #555;
+  font-size: 0.85rem;
+  padding: 8px 0;
+}
+
+/* ── Lightbox modal ── */
+#lightbox {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.88);
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+}
+
+#lightbox.open {
+  display: flex;
+}
+
+/* Body holds image + download button, centered as a column */
+#lightbox-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  cursor: default;
+  /* Allow scrolling if 2× image is taller than viewport */
+  max-height: 96vh;
+  overflow-y: auto;
+}
+
+#lightbox-img {
+  /* Width set to 2× naturalWidth in JS; capped by viewport */
+  max-width: 96vw;
+  max-height: 88vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.8);
+  image-rendering: pixelated;
+}
+
+#lightbox-download {
+  display: inline-block;
+  background: #0f3460;
+  border: 1px solid #1e3a6e;
+  border-radius: 6px;
+  color: #a0c4ff;
+  font-size: 0.85rem;
+  padding: 6px 18px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+#lightbox-download:hover {
+  background: #1a4a8a;
+  border-color: #4a90d9;
+}
+
+#lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  background: none;
+  border: 1px solid #555;
+  border-radius: 6px;
+  color: #ccc;
+  font-size: 1rem;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+#lightbox-close:hover {
+  border-color: #eb5757;
+  color: #eb5757;
+}
+
+/* Make clickable images show a zoom cursor */
+#detail-image,
+.thumb-card img {
+  cursor: zoom-in;
+}
+
+/* ── Frequency tune row ── */
+#freq-tune {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+#freq-tune label {
+  font-size: 0.75rem;
+  color: #888;
+  white-space: nowrap;
+}
+
+#freq-input {
+  width: 10ch;
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 0.85rem;
+  padding: 3px 6px;
+  transition: border-color 0.15s;
+}
+
+#freq-input:focus {
+  border-color: #6fcf97;
+  outline: none;
+}
+
+#freq-set-btn {
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 6px;
+  color: #6fcf97;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 3px 8px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+#freq-set-btn:hover {
+  background: #1a4731;
+  border-color: #6fcf97;
+}
+
+#freq-status {
+  font-size: 0.75rem;
+  min-width: 6ch;
+  white-space: nowrap;
+}
+
+#freq-status.freq-ok  { color: #6fcf97; }
+#freq-status.freq-err { color: #eb5757; }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+
+/* ── Audio panel (right side — mirrors QSSTV spectrumWidget) ── */
+#audio-panel {
+  width: 180px;
+  flex-shrink: 0;
+  background: #16213e;
+  border-left: 1px solid #0f3460;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+#audio-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 4px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #0f3460;
+}
+
+#audio-panel-title {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #888;
+  flex: 1;
+}
+
+/* Squelch button */
+#squelch-btn {
+  background: none;
+  border: 1px solid #0f3460;
+  border-radius: 5px;
+  color: #888;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-family: monospace;
+  line-height: 1;
+  padding: 2px 5px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+#squelch-btn:hover {
+  border-color: #f2c94c;
+  color: #e0e0e0;
+}
+
+#squelch-btn.active {
+  background: #4a3000;
+  border-color: #f2c94c;
+  color: #f2c94c;
+}
+
+/* Squelch enabled AND open (signal above threshold — audio passing through) */
+#squelch-btn.open {
+  background: #1a4731;
+  border-color: #6fcf97;
+  color: #6fcf97;
+}
+
+/* Mute button */
+#mute-btn {
+  background: none;
+  border: 1px solid #0f3460;
+  border-radius: 5px;
+  color: #888;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 2px 6px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+#mute-btn:hover {
+  border-color: #6fcf97;
+  color: #e0e0e0;
+}
+
+#mute-btn.unmuted {
+  background: #1a4731;
+  border-color: #6fcf97;
+  color: #6fcf97;
+}
+
+/* Audio output device selector inside audio panel */
+#audio-output-select {
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 4px;
+  color: #a0c4ff;
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 2px 4px;
+  max-width: 90px;
+  flex-shrink: 0;
+}
+
+/* Frequency marker canvases */
+#marker-spectrum,
+#marker-waterfall {
+  display: block;
+  width: 100%;
+  height: 8px;
+  flex-shrink: 0;
+  background: #0a0a1a;
+}
+
+/* FFT spectrum canvas */
+#spectrum-canvas {
+  display: block;
+  width: 100%;
+  flex: 1 1 0;
+  min-height: 60px;
+  background: #00007f; /* dark blue, matches QSSTV palette */
+}
+
+/* Waterfall canvas */
+#waterfall-canvas {
+  display: block;
+  width: 100%;
+  flex: 2 1 0;
+  min-height: 120px;
+  background: #000;
+}
+
+/* VU meter row */
+#vu-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+  border-top: 1px solid #0f3460;
+}
+
+#vu-label {
+  font-size: 0.6rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  width: 22px;
+  flex-shrink: 0;
+}
+
+#vu-track {
+  flex: 1;
+  height: 8px;
+  background: #0a0a1a;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid #0f3460;
+}
+
+#vu-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 4px;
+  transition: width 0.08s linear, background-color 0.08s linear;
+  background: #6fcf97;
+}
+
+/* Display controls */
+#audio-panel-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 2px 4px;
+  padding: 4px 6px 6px;
+  flex-shrink: 0;
+  border-top: 1px solid #0f3460;
+}
+
+#audio-panel-controls label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 0.62rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  gap: 2px;
+}
+
+#audio-panel-controls input[type="number"] {
+  width: 100%;
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 0.75rem;
+  padding: 2px 3px;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+#audio-panel-controls input[type="number"]::-webkit-inner-spin-button,
+#audio-panel-controls input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+#audio-panel-controls input[type="number"]:focus {
+  border-color: #6fcf97;
+  outline: none;
+}
+
+/* ── Metrics button (header, left of SNR bar) ── */
+#metrics-btn {
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 6px;
+  color: #a0c4ff;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 3px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+#metrics-btn:hover {
+  background: #1a4a8a;
+  border-color: #4a90d9;
+  color: #e0e0e0;
+}
+
+/* ── Metrics modal ── */
+#metrics-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.80);
+  align-items: center;
+  justify-content: center;
+}
+
+#metrics-modal.open {
+  display: flex;
+}
+
+#metrics-modal-box {
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 10px;
+  width: min(720px, 96vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.7);
+}
+
+#metrics-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #0f3460;
+  flex-shrink: 0;
+}
+
+#metrics-modal-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #e0e0e0;
+  flex: 1;
+}
+
+#metrics-period-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.period-tab {
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 5px;
+  color: #888;
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.period-tab:hover {
+  border-color: #4a90d9;
+  color: #e0e0e0;
+}
+
+.period-tab.active {
+  background: #1a4a8a;
+  border-color: #4a90d9;
+  color: #a0c4ff;
+  font-weight: 600;
+}
+
+#metrics-modal-close {
+  background: none;
+  border: 1px solid #555;
+  border-radius: 6px;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 3px 10px;
+  transition: border-color 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+#metrics-modal-close:hover {
+  border-color: #eb5757;
+  color: #eb5757;
+}
+
+/* Summary stat row */
+#metrics-summary {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid #0f3460;
+  flex-shrink: 0;
+}
+
+.metrics-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 8px;
+  border-right: 1px solid #0f3460;
+}
+
+.metrics-stat:last-child {
+  border-right: none;
+}
+
+.metrics-stat-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #e0e0e0;
+  line-height: 1;
+}
+
+.metrics-stat-value.metrics-complete { color: #6fcf97; }
+.metrics-stat-value.metrics-partial  { color: #f2c94c; }
+
+.metrics-stat-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+  margin-top: 4px;
+}
+
+/* Chart area */
+#metrics-chart-wrap {
+  flex: 1;
+  min-height: 200px;
+  padding: 16px;
+  position: relative;
+}
+
+#metrics-chart {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* By-mode breakdown */
+#metrics-by-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid #0f3460;
+  flex-shrink: 0;
+}
+
+.metrics-mode-chip {
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 12px;
+  color: #a0c4ff;
+  font-size: 0.75rem;
+  padding: 2px 10px;
+  white-space: nowrap;
+}

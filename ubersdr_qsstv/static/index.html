@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UberSDR SSTV</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/leaflet.css">
+</head>
+<body>
+  <header>
+    <h1>UberSDR SSTV</h1>
+    <div id="ubersdr-url-wrap">
+      <input id="ubersdr-url-input" type="text" list="ubersdr-instances-list"
+             placeholder="http://host:8080"
+             title="Enter UberSDR base URL or pick a known instance from the list">
+      <datalist id="ubersdr-instances-list"></datalist>
+      <button id="ubersdr-url-set-btn" title="Connect to this URL">▶</button>
+      <span id="ubersdr-url-status"></span>
+    </div>
+    <div id="status-badges"></div>
+    <div id="freq-tune">
+      <label for="freq-input">Tune (MHz):</label>
+      <input id="freq-input" type="text" list="freq-presets"
+             placeholder="e.g. 14.230" title="Enter frequency in MHz (10 kHz – 30 MHz) then press Enter or click ▶, or pick a common SSTV frequency from the list">
+      <datalist id="freq-presets">
+        <option value="28.680">
+        <option value="24.975">
+        <option value="21.340">
+        <option value="14.240">
+        <option value="14.233">
+        <option value="14.230">
+        <option value="10.132">
+        <option value="7.171">
+        <option value="7.043">
+        <option value="7.040">
+        <option value="7.033">
+        <option value="3.845">
+        <option value="3.733">
+        <option value="3.730">
+        <option value="1.890">
+      </datalist>
+      <button id="freq-set-btn" title="Apply frequency">▶</button>
+      <span id="freq-status"></span>
+    </div>
+    <button id="metrics-btn" title="Decode statistics">📊 Decodes</button>
+    <div id="snr-bar">
+      <span id="snr-bar-label">SNR</span>
+      <canvas id="live-snr-chart" width="200" height="36"></canvas>
+      <span id="live-snr-value">—</span>
+    </div>
+    <span id="live-dot">● live</span>
+  </header>
+
+  <!-- Metrics modal -->
+  <div id="metrics-modal" role="dialog" aria-modal="true" aria-label="Decode metrics">
+    <div id="metrics-modal-box">
+      <div id="metrics-modal-header">
+        <span id="metrics-modal-title">📊 Decode Statistics</span>
+        <div id="metrics-period-tabs">
+          <button class="period-tab" data-period="1h">1h</button>
+          <button class="period-tab active" data-period="24h">24h</button>
+          <button class="period-tab" data-period="7d">7d</button>
+          <button class="period-tab" data-period="30d">30d</button>
+        </div>
+        <button id="metrics-modal-close" title="Close (Esc)">✕</button>
+      </div>
+      <div id="metrics-summary">
+        <div class="metrics-stat"><span class="metrics-stat-value" id="metrics-total">—</span><span class="metrics-stat-label">Total</span></div>
+        <div class="metrics-stat"><span class="metrics-stat-value metrics-complete" id="metrics-complete">—</span><span class="metrics-stat-label">Complete</span></div>
+        <div class="metrics-stat"><span class="metrics-stat-value metrics-partial" id="metrics-partial">—</span><span class="metrics-stat-label">Partial</span></div>
+        <div class="metrics-stat"><span class="metrics-stat-value" id="metrics-snr">—</span><span class="metrics-stat-label">Avg SNR</span></div>
+      </div>
+      <div id="metrics-chart-wrap">
+        <canvas id="metrics-chart"></canvas>
+      </div>
+      <div id="metrics-by-mode"></div>
+    </div>
+  </div>
+
+  <div class="main-layout">
+    <div id="gallery-panel">
+      <div id="gallery-header">
+        <h2>Gallery</h2>
+        <label id="gallery-complete-label" title="Only show images with ≥95% of lines decoded">
+          <input type="checkbox" id="gallery-complete-only" checked> Complete only
+        </label>
+        <label id="gallery-show-latest-label" title="Always jump to the newest image after a live decode completes">
+          <input type="checkbox" id="gallery-show-latest" checked> Show latest
+        </label>
+      </div>
+      <div id="gallery-grid">
+        <div id="gallery-sentinel"></div>
+      </div>
+    </div>
+
+    <div id="detail-panel">
+      <!-- Live RX preview — shown while an image is being decoded -->
+      <div id="rx-live-panel">
+        <h2>Now Receiving <span id="rx-live-label"></span></h2>
+        <div id="rx-live-progress-row">
+          <div id="rx-live-progress-wrap">
+            <div id="rx-live-progress-bar"></div>
+          </div>
+          <span id="rx-live-countdown"></span>
+        </div>
+        <!-- Two-column row: meta table left, image right — mirrors #detail-top -->
+        <div id="rx-live-top">
+          <div id="rx-live-meta"></div>
+          <div id="rx-live-image-wrap">
+            <img id="rx-live-image" src="" alt="Receiving…">
+            <canvas id="rx-live-snr-bar" title="Signal quality — top = start of image, bottom = end"></canvas>
+          </div>
+        </div>
+        <!-- Signal quality chart — populates live from snr SSE -->
+        <div id="rx-live-snr-container">
+          <h3>Signal Quality</h3>
+          <canvas id="rx-live-snr-chart"></canvas>
+        </div>
+        <!-- Origin map — shown once a callsign is decoded -->
+        <div id="rx-live-map-container">
+          <h3>Origin Map</h3>
+          <div id="rx-live-map-no-callsign">Waiting for callsign…</div>
+          <div id="rx-live-map"></div>
+        </div>
+      </div>
+
+      <div id="detail-empty">Select an image from the gallery, or wait for a live decode to begin</div>
+
+      <!-- Lightbox modal — shown when clicking any SSTV image -->
+      <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer">
+        <button id="lightbox-close" title="Close (Esc)">✕</button>
+        <div id="lightbox-body">
+          <img id="lightbox-img" src="" alt="SSTV image">
+          <a id="lightbox-download" download title="Save image">⬇ Save</a>
+        </div>
+      </div>
+      <div id="detail-content">
+        <button id="detail-close-btn" title="Close">✕ Close</button>
+        <!-- Top row: metadata on left, image+SNR bar on right -->
+        <div id="detail-top">
+          <div id="detail-meta-wrap">
+            <div id="detail-meta"></div>
+            <div id="detail-actions">
+              <a id="detail-save-btn" download title="Save image to disk">⬇ Save</a>
+              <button id="detail-delete-btn" title="Delete this image">🗑 Delete</button>
+            </div>
+          </div>
+          <div id="detail-image-wrap">
+            <img id="detail-image" src="" alt="SSTV image">
+            <canvas id="detail-snr-bar" title="Signal quality — top = start of image, bottom = end"></canvas>
+          </div>
+        </div>
+        <div id="snr-chart-container">
+          <h3>Signal Quality</h3>
+          <canvas id="snr-chart"></canvas>
+        </div>
+        <div id="map-container">
+          <h3>Origin Map</h3>
+          <div id="map-no-callsign">No callsign decoded — origin unknown</div>
+          <div id="map"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Audio panel — right side, mirrors QSSTV spectrumWidget -->
+    <div id="audio-panel">
+      <div id="audio-panel-header">
+        <span id="audio-panel-title">Audio</span>
+        <button id="squelch-btn" title="Squelch" aria-pressed="false">S</button>
+        <button id="mute-btn" title="Mute / unmute audio preview" aria-pressed="false">🔇</button>
+        <select id="audio-output-select" title="Audio output device" style="display:none"></select>
+      </div>
+
+      <!-- Frequency marker ticks above spectrum -->
+      <canvas id="marker-spectrum" width="180" height="8"></canvas>
+
+      <!-- FFT spectrum display -->
+      <canvas id="spectrum-canvas" width="180" height="80"></canvas>
+
+      <!-- Frequency marker ticks above waterfall -->
+      <canvas id="marker-waterfall" width="180" height="8"></canvas>
+
+      <!-- Scrolling waterfall -->
+      <canvas id="waterfall-canvas" width="180" height="160"></canvas>
+
+      <!-- VU meter -->
+      <div id="vu-wrap">
+        <div id="vu-label">VOL</div>
+        <div id="vu-track">
+          <div id="vu-bar"></div>
+        </div>
+      </div>
+
+      <!-- Display controls -->
+      <div id="audio-panel-controls">
+        <label title="Top of dB scale">Max dB
+          <input id="ctrl-maxdb" type="number" min="-40" max="10" value="-25" step="1">
+        </label>
+        <label title="dB range shown">Range
+          <input id="ctrl-range" type="number" min="10" max="100" value="60" step="1">
+        </label>
+        <label title="Smoothing (0.6–1.0)">Avg
+          <input id="ctrl-avg" type="number" min="0.60" max="1.00" value="0.90" step="0.01">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/chart.umd.min.js"></script>
+  <script src="/static/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="/static/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+  <script src="/static/metrics.js"></script>
+</body>
+</html>

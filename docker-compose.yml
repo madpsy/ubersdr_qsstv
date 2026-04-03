@@ -1,0 +1,21 @@
+services:
+  ubersdr_qsstv:
+    image: madpsy/ubersdr_qsstv:latest
+    restart: unless-stopped
+    ports:
+      - "6091:6091"
+    environment:
+      # UberSDR base URL
+      UBERSDR_URL: "http://172.20.0.1:8080"
+      # Comma-separated freq:mode pairs, e.g. 14230000:usb,21335000:usb
+      UBERSDR_CHANNELS: "14230000:usb"
+      # Uncomment and set as needed:
+      # UBERSDR_PASS: ""
+      # OUTPUT_DIR: "/data"
+      # WEB_PORT: "6091"
+      # WEB_TLS: "0"
+      # RECEIVER_LAT: "0.0"
+      # RECEIVER_LON: "0.0"
+      # CTY_FILE: ""
+    volumes:
+      - ./sstv-images:/data
