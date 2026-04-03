@@ -1229,3 +1229,100 @@ header h1 {
   padding: 2px 10px;
   white-space: nowrap;
 }
+
+/* ── Auth modal ─────────────────────────────────────────────────────────── */
+#auth-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 3000;
+  align-items: center;
+  justify-content: center;
+}
+
+#auth-modal.open {
+  display: flex;
+}
+
+#auth-modal-box {
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 10px;
+  width: 340px;
+  max-width: 95vw;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  overflow: hidden;
+}
+
+#auth-modal-header {
+  background: #0f3460;
+  padding: 12px 16px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+#auth-modal-body {
+  padding: 20px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#auth-modal-message {
+  font-size: 0.88rem;
+  color: #aaa;
+}
+
+#auth-password-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: #1a1a2e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 0.9rem;
+  outline: none;
+}
+
+#auth-password-input:focus {
+  border-color: #e94560;
+}
+
+#auth-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+#auth-submit-btn {
+  background: #e94560;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 18px;
+  font-size: 0.88rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+#auth-submit-btn:hover { background: #c73652; }
+
+#auth-cancel-btn {
+  background: #0f3460;
+  color: #aaa;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+#auth-cancel-btn:hover { color: #e0e0e0; }
+
+.auth-error {
+  color: #e94560;
+  font-size: 0.82rem;
+  min-height: 1.1em;
+}

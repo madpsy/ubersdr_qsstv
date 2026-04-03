@@ -2,6 +2,132 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
+// Auth state
+// ---------------------------------------------------------------------------
+// Whether the server has a password configured (fetched on boot from /api/auth/status).
+let authPasswordConfigured = false;
+// Whether the current browser session is authenticated.
+let authAuthenticated = false;
+// Queue of callbacks waiting for the user to authenticate.
+let authPendingCallbacks = [];
+
+// ---------------------------------------------------------------------------
+// Auth modal
+// ---------------------------------------------------------------------------
+function openAuthModal(onSuccess, onCancel) {
+  authPendingCallbacks.push({ onSuccess, onCancel });
+  if (authPendingCallbacks.length > 1) return; // modal already open
+
+  const modal    = document.getElementById('auth-modal');
+  const input    = document.getElementById('auth-password-input');
+  const errorEl  = document.getElementById('auth-modal-error');
+  const submitBtn = document.getElementById('auth-submit-btn');
+  const cancelBtn = document.getElementById('auth-cancel-btn');
+
+  if (!modal) return;
+  errorEl.textContent = '';
+  input.value = '';
+  modal.classList.add('open');
+  setTimeout(() => input.focus(), 50);
+
+  function doSubmit() {
+    const pw = input.value;
+    if (!pw) { errorEl.textContent = 'Please enter a password.'; return; }
+    submitBtn.disabled = true;
+    submitBtn.textContent = '…';
+    fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw }),
+    })
+      .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.error || 'Incorrect password'); });
+        return r.json();
+      })
+      .then(() => {
+        authAuthenticated = true;
+        modal.classList.remove('open');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Unlock';
+        input.removeEventListener('keydown', onKeydown);
+        // Fire all queued success callbacks.
+        const cbs = authPendingCallbacks.splice(0);
+        for (const cb of cbs) cb.onSuccess();
+      })
+      .catch(err => {
+        errorEl.textContent = err.message || 'Incorrect password.';
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Unlock';
+        input.value = '';
+        input.focus();
+      });
+  }
+
+  function doCancel() {
+    modal.classList.remove('open');
+    input.removeEventListener('keydown', onKeydown);
+    const cbs = authPendingCallbacks.splice(0);
+    for (const cb of cbs) { if (cb.onCancel) cb.onCancel(); }
+  }
+
+  function onKeydown(e) {
+    if (e.key === 'Enter') { e.preventDefault(); doSubmit(); }
+    if (e.key === 'Escape') { e.preventDefault(); doCancel(); }
+  }
+
+  submitBtn.onclick = doSubmit;
+  cancelBtn.onclick = doCancel;
+  input.addEventListener('keydown', onKeydown);
+}
+
+// requireAuth wraps an action: if auth is not needed (no password configured)
+// it shows a "not available" notice; if already authenticated it runs the action
+// immediately; otherwise it opens the password modal first.
+function requireAuth(action) {
+  if (!authPasswordConfigured) {
+    // No password set — write actions are disabled.
+    showAuthNotice('Write actions are disabled. Set UI_PASSWORD to enable them.');
+    return;
+  }
+  if (authAuthenticated) {
+    action();
+    return;
+  }
+  openAuthModal(
+    () => action(),   // onSuccess — run the action
+    () => {},         // onCancel — do nothing
+  );
+}
+
+// Show a brief inline notice (reuses the auth modal error element as a toast).
+function showAuthNotice(msg) {
+  const modal    = document.getElementById('auth-modal');
+  const errorEl  = document.getElementById('auth-modal-error');
+  const input    = document.getElementById('auth-password-input');
+  const submitBtn = document.getElementById('auth-submit-btn');
+  const cancelBtn = document.getElementById('auth-cancel-btn');
+  if (!modal) { alert(msg); return; }
+  // Show modal in read-only notice mode.
+  if (input)    input.style.display = 'none';
+  if (submitBtn) submitBtn.style.display = 'none';
+  if (cancelBtn) cancelBtn.textContent = 'Close';
+  const msgEl = document.getElementById('auth-modal-message');
+  if (msgEl) msgEl.textContent = msg;
+  if (errorEl) errorEl.textContent = '';
+  modal.classList.add('open');
+  if (cancelBtn) {
+    cancelBtn.onclick = () => {
+      modal.classList.remove('open');
+      // Restore for next real auth use.
+      if (input)    input.style.display = '';
+      if (submitBtn) submitBtn.style.display = '';
+      cancelBtn.textContent = 'Cancel';
+      if (msgEl) msgEl.textContent = 'Enter the UI password to continue.';
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 let allRecords = [];       // all records loaded so far (newest first)
@@ -662,6 +788,10 @@ function closeDetail() {
 }
 
 function deleteRecord(id) {
+  requireAuth(() => _doDeleteRecord(id));
+}
+
+function _doDeleteRecord(id) {
   const btn = document.getElementById('detail-delete-btn');
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
 
@@ -1576,6 +1706,10 @@ function initURLWidget() {
       if (statusEl) { statusEl.textContent = '✗ invalid URL'; statusEl.className = 'url-err'; }
       return;
     }
+    requireAuth(() => _doApplyURL(raw, statusEl));
+  }
+
+  function _doApplyURL(raw, statusEl) {
     if (statusEl) { statusEl.textContent = '…'; statusEl.className = ''; }
 
     fetch('/api/config/url', {
@@ -1697,8 +1831,13 @@ function applyFrequency() {
   }
   const label = statuses[0].label;
 
-  if (statusEl) { statusEl.textContent = '…'; statusEl.className = ''; }
+  requireAuth(() => {
+    if (statusEl) { statusEl.textContent = '…'; statusEl.className = ''; }
+    _doApplyFrequency(label, freqHz, statusEl);
+  });
+}
 
+function _doApplyFrequency(label, freqHz, statusEl) {
   fetch(`/api/instances/${encodeURIComponent(label)}/frequency`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2419,6 +2558,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
   setInterval(pollStatus, 15000);
+
+  // Fetch auth status on boot so requireAuth() knows whether a password is
+  // configured and whether the current session is already authenticated.
+  fetch('/api/auth/status')
+    .then(r => r.json())
+    .then(d => {
+      authPasswordConfigured = !!d.password_configured;
+      authAuthenticated      = !!d.authenticated;
+    })
+    .catch(() => {});
 
   // Detail close button
   const closeBtn = document.getElementById('detail-close-btn');

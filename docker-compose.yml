@@ -17,5 +17,7 @@ services:
       # RECEIVER_LAT: "0.0"
       # RECEIVER_LON: "0.0"
       # CTY_FILE: ""
+      # UI_PASSWORD: ""   # Set a password to enable write actions (tune, delete, change URL).
+                          # Leave empty (default) to disable all write actions.
     volumes:
       - ./sstv-images:/data

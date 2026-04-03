@@ -72,6 +72,8 @@ func main() {
 		"Receiver latitude for origin map (env: RECEIVER_LAT)")
 	receiverLon := flag.Float64("receiver-lon", envFloat64Or("RECEIVER_LON", 0.0),
 		"Receiver longitude for origin map (env: RECEIVER_LON)")
+	uiPassword := flag.String("ui-password", envOr("UI_PASSWORD", ""),
+		"Password required for write actions in the web UI (env: UI_PASSWORD; empty = write actions disabled)")
 
 	flag.Parse()
 
@@ -98,9 +100,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -tls                   Enable HTTPS with auto-generated self-signed cert\n")
 		fmt.Fprintf(os.Stderr, "                         (required for audio output device selection in Chrome/Edge)\n")
 		fmt.Fprintf(os.Stderr, "  -receiver-lat float    Receiver latitude\n")
-		fmt.Fprintf(os.Stderr, "  -receiver-lon float    Receiver longitude\n\n")
+		fmt.Fprintf(os.Stderr, "  -receiver-lon float    Receiver longitude\n")
+		fmt.Fprintf(os.Stderr, "  -ui-password  string   Password for write actions in the web UI (empty = disabled)\n\n")
 		fmt.Fprintf(os.Stderr, "Environment variables: UBERSDR_URL, UBERSDR_CHANNELS, OUTPUT_DIR,\n")
-		fmt.Fprintf(os.Stderr, "  UBERSDR_PASS, QSSTV_BIN, CTY_FILE, WEB_PORT, WEB_TLS, RECEIVER_LAT, RECEIVER_LON\n\n")
+		fmt.Fprintf(os.Stderr, "  UBERSDR_PASS, QSSTV_BIN, CTY_FILE, WEB_PORT, WEB_TLS, RECEIVER_LAT, RECEIVER_LON,\n")
+		fmt.Fprintf(os.Stderr, "  UI_PASSWORD\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  ubersdr_qsstv -url http://sdr.example.com:8080 \\\n")
 		fmt.Fprintf(os.Stderr, "                -channel 14230000:usb \\\n")
@@ -197,7 +201,7 @@ func main() {
 			} else {
 				log.Printf("web UI listening on http://0.0.0.0%s", addr)
 			}
-			if err := startWebServer(addr, store, instances, *outputDir, *receiverLat, *receiverLon, tlsCfg, &currentURL, &urlMu, ms); err != nil {
+			if err := startWebServer(addr, store, instances, *outputDir, *receiverLat, *receiverLon, tlsCfg, &currentURL, &urlMu, ms, *uiPassword); err != nil {
 				log.Fatalf("web server: %v", err)
 			}
 		}()

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/tls"
 	"embed"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +21,41 @@ import (
 	"sync"
 	"time"
 )
+
+// ---------------------------------------------------------------------------
+// Session store — in-memory set of valid session tokens
+// ---------------------------------------------------------------------------
+
+type sessionStore struct {
+	mu     sync.RWMutex
+	tokens map[string]struct{}
+}
+
+func newSessionStore() *sessionStore {
+	return &sessionStore{tokens: make(map[string]struct{})}
+}
+
+func (s *sessionStore) create() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("session token generation failed: " + err.Error())
+	}
+	tok := hex.EncodeToString(b)
+	s.mu.Lock()
+	s.tokens[tok] = struct{}{}
+	s.mu.Unlock()
+	return tok
+}
+
+func (s *sessionStore) valid(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	s.mu.RLock()
+	_, ok := s.tokens[tok]
+	s.mu.RUnlock()
+	return ok
+}
 
 //go:embed static/*
 var staticFiles embed.FS
@@ -208,8 +245,105 @@ func writeStreamingWAVHeader(w http.ResponseWriter, sampleRate, channels int) {
 	w.Write(hdr) //nolint:errcheck
 }
 
-func startWebServer(addr string, store *imageStore, instances []*instance, outputDir string, receiverLat, receiverLon float64, tlsCfg *tls.Config, currentURL *string, urlMu *sync.RWMutex, ms *metricsStore) error {
+const sessionCookieName = "ui_session"
+
+// requiresAuth checks the session cookie against the store.
+// If the password is empty, write actions are disabled entirely (returns false with a 403).
+// If the password is set and the session is valid, returns true.
+// Otherwise returns false and writes the appropriate HTTP error.
+func requiresAuth(w http.ResponseWriter, r *http.Request, uiPassword string, sessions *sessionStore) bool {
+	if uiPassword == "" {
+		http.Error(w, `{"error":"write actions are disabled — set UI_PASSWORD to enable them"}`, http.StatusForbidden)
+		return false
+	}
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil || !sessions.valid(cookie.Value) {
+		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+func startWebServer(addr string, store *imageStore, instances []*instance, outputDir string, receiverLat, receiverLon float64, tlsCfg *tls.Config, currentURL *string, urlMu *sync.RWMutex, ms *metricsStore, uiPassword string) error {
+	sessions := newSessionStore()
 	mux := http.NewServeMux()
+
+	// ---------------------------------------------------------------------------
+	// Auth endpoints
+	// ---------------------------------------------------------------------------
+
+	// GET /api/auth/status — returns whether a password is configured and whether
+	// the current session is authenticated.
+	mux.HandleFunc("/api/auth/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		configured := uiPassword != ""
+		authed := false
+		if configured {
+			if cookie, err := r.Cookie(sessionCookieName); err == nil {
+				authed = sessions.valid(cookie.Value)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"password_configured": configured,
+			"authenticated":       authed,
+		})
+	})
+
+	// POST /api/auth/login — verify password and issue a session cookie.
+	// Body: {"password": "..."}
+	mux.HandleFunc("/api/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if uiPassword == "" {
+			http.Error(w, `{"error":"no password configured"}`, http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if body.Password != uiPassword {
+			http.Error(w, `{"error":"incorrect password"}`, http.StatusUnauthorized)
+			return
+		}
+		tok := sessions.create()
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookieName,
+			Value:    tok,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	})
+
+	// POST /api/auth/logout — clear the session cookie.
+	mux.HandleFunc("/api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookieName,
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	})
 
 	// Static files (embedded)
 	staticFS, err := fs.Sub(staticFiles, "static")
@@ -279,6 +413,9 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 			json.NewEncoder(w).Encode(rec)
 
 		case http.MethodDelete:
+			if !requiresAuth(w, r, uiPassword, sessions) {
+				return
+			}
 			rec, ok := store.get(id)
 			if !ok {
 				http.NotFound(w, r)
@@ -575,6 +712,9 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !requiresAuth(w, r, uiPassword, sessions) {
+			return
+		}
 
 		var body struct {
 			FreqHz int `json:"freq_hz"`
@@ -671,6 +811,9 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 	mux.HandleFunc("/api/config/url", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !requiresAuth(w, r, uiPassword, sessions) {
 			return
 		}
 		var body struct {
