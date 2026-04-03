@@ -55,3 +55,9 @@ compile_commands.json
 documentation/api/api_html
 documentation/manual/manual_html
 
+# headless build output
+build-headless/
+
+# Go binary (built by: cd ubersdr_qsstv && go build)
+ubersdr_qsstv/ubersdr_qsstv
+

@@ -44,6 +44,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libqt5core5a \
         libqt5gui5 \
+        libqt5widgets5 \
         libqt5network5 \
         libqt5xml5 \
         libqt5multimedia5 \
