@@ -2,6 +2,67 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
+// SSTV mode name translation table
+// Maps the short names reported by QSSTV to their full human-readable names.
+// Source: SSTVTable in src/sstv/sstvparam.cpp
+// ---------------------------------------------------------------------------
+const SSTV_MODE_NAMES = {
+  'M1':      'Martin 1',
+  'M2':      'Martin 2',
+  'S1':      'Scottie 1',
+  'S2':      'Scottie 2',
+  'SDX':     'Scottie DX',
+  'SC2-60':  'SC2 60',
+  'SC2-120': 'SC2 120',
+  'SC2-180': 'SC2 180',
+  'R24':     'Robot 24',
+  'R36':     'Robot 36',
+  'R72':     'Robot 72',
+  'P3':      'P3',
+  'P5':      'P5',
+  'P7':      'P7',
+  'BW8':     'B/W 8',
+  'BW12':    'B/W 12',
+  'PD50':    'PD50',
+  'PD90':    'PD90',
+  'PD120':   'PD120',
+  'PD160':   'PD160',
+  'PD180':   'PD180',
+  'PD240':   'PD240',
+  'PD290':   'PD290',
+  'MP73':    'MP73',
+  'MP115':   'MP115',
+  'MP140':   'MP140',
+  'MP175':   'MP175',
+  'MR73':    'MR73',
+  'MR90':    'MR90',
+  'MR115':   'MR115',
+  'MR140':   'MR140',
+  'MR175':   'MR175',
+  'ML180':   'ML180',
+  'ML240':   'ML240',
+  'ML280':   'ML280',
+  'ML320':   'ML320',
+  'FAX480':  'FAX480',
+  'AVT24':   'AVT24',
+  'AVT90':   'AVT90',
+  'AVT94':   'AVT94',
+  'MP73-N':  'MP73-Narrow',
+  'MP110-N': 'MP110-Narrow',
+  'MP140-N': 'MP140-Narrow',
+  'MC110-N': 'MC110-Narrow',
+  'MC140-N': 'MC140-Narrow',
+  'MC180-N': 'MC180-Narrow',
+};
+
+// Returns the full name for a given SSTV short-name, falling back to the
+// short name itself if it isn't in the table (future/unknown modes).
+function sstvModeName(shortName) {
+  if (!shortName) return shortName;
+  return SSTV_MODE_NAMES[shortName] || shortName;
+}
+
+// ---------------------------------------------------------------------------
 // Auth state
 // ---------------------------------------------------------------------------
 // Whether the server has a password configured (fetched on boot from /api/auth/status).
@@ -403,7 +464,7 @@ function buildLiveMeta(fields) {
   const metaEl = document.getElementById('rx-live-meta');
   if (!metaEl) return;
   const rows = [
-    ['Mode',     fields.mode     || '—'],
+    ['Mode',     sstvModeName(fields.mode) || '—'],
     ['Callsign', fields.callsign || '—'],
     ['Frequency',fields.freq     || '—'],
     ['RX start', fields.rxStart  || '—'],
@@ -641,7 +702,7 @@ function buildThumbCard(rec) {
                       : isPartial  ? '<span class="decode-badge partial"  title="Partial decode">❌</span>'
                       : '';
   meta.innerHTML =
-    `<div class="thumb-meta-top"><span class="mode-group">${completeBadge}<span class="mode">${rec.sstv_mode || '?'}</span></span>` +
+    `<div class="thumb-meta-top"><span class="mode-group">${completeBadge}<span class="mode">${sstvModeName(rec.sstv_mode) || '?'}</span></span>` +
     (rec.callsign ? `<span class="call">${rec.callsign}</span>` : '') + `</div>` +
     `<div class="freq">${fmtFreq(rec.frequency_hz)} ${(rec.audio_mode || '').toUpperCase()}</div>` +
     (rec.snr_avg_db ? `<div class="snr"${snrStyle}>${fmtSNR(rec.snr_avg_db)} avg SNR</div>` : '');
@@ -885,7 +946,7 @@ function selectRecord(id) {
   }
 
   const rows = [
-    ['Mode',      rec.sstv_mode || '—', ''],
+    ['Mode',      sstvModeName(rec.sstv_mode) || '—', ''],
     ['Decode',    decodeValue, decodeStyle],
     ['Callsign',  rec.callsign  || '—', ''],
     ['Frequency', fmtFreq(rec.frequency_hz) + ' ' + (rec.audio_mode || '').toUpperCase(), ''],
@@ -1959,7 +2020,7 @@ function connectRxLive(label) {
     try {
       const d = JSON.parse(e.data);
       // Show the panel and reset state.
-      currentMode = d.sstv_mode || '';
+      currentMode = sstvModeName(d.sstv_mode) || '';
       currentCallsign = '';
       rxLiveActive = true;
       panel.classList.add('active');
