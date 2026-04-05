@@ -766,7 +766,7 @@ function updateGalleryCounts() {
   // Update the total count in the gallery header.
   const totalEl = document.getElementById('gallery-total-count');
   if (totalEl) {
-    totalEl.textContent = total > 0 ? `${total} image${total !== 1 ? 's' : ''}` : '';
+    totalEl.textContent = total > 0 ? `${total}` : '';
   }
 }
 
