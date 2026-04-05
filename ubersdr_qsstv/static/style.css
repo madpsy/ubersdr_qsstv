@@ -321,7 +321,8 @@ header h1 {
 }
 
 #gallery-complete-label,
-#gallery-show-latest-label {
+#gallery-show-latest-label,
+#gallery-snr-filter-label {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -333,7 +334,8 @@ header h1 {
 }
 
 #gallery-complete-label input[type="checkbox"],
-#gallery-show-latest-label input[type="checkbox"] {
+#gallery-show-latest-label input[type="checkbox"],
+#gallery-snr-filter-label input[type="checkbox"] {
   accent-color: #6fcf97;
   cursor: pointer;
 }
