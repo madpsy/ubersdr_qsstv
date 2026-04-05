@@ -734,6 +734,42 @@ function fmtDateLabel(key) {
   return d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
 }
 
+// ---------------------------------------------------------------------------
+// Gallery count helpers
+// ---------------------------------------------------------------------------
+
+// Update the per-day-group count badge and the overall total count.
+// Called after any card is added, removed, or shown/hidden by the filter.
+function updateGalleryCounts() {
+  const grid = document.getElementById('gallery-grid');
+  let total = 0;
+
+  grid.querySelectorAll('.day-group').forEach(group => {
+    const cards = group.querySelectorAll('.thumb-card');
+    const visibleCount = Array.from(cards).filter(c => c.style.display !== 'none').length;
+
+    // Update or create the count badge inside the day-group label.
+    let label = group.querySelector('.day-group-label');
+    if (label) {
+      let badge = label.querySelector('.day-group-count');
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'day-group-count';
+        label.appendChild(badge);
+      }
+      badge.textContent = visibleCount > 0 ? `${visibleCount}` : '';
+    }
+
+    total += visibleCount;
+  });
+
+  // Update the total count in the gallery header.
+  const totalEl = document.getElementById('gallery-total-count');
+  if (totalEl) {
+    totalEl.textContent = total > 0 ? `${total} image${total !== 1 ? 's' : ''}` : '';
+  }
+}
+
 // Returns the existing day-group wrapper for dateKey, or creates + inserts one
 // before the sentinel.
 function getOrCreateDayGroup(dateKey) {
@@ -743,7 +779,7 @@ function getOrCreateDayGroup(dateKey) {
   const group = document.createElement('div');
   group.className = 'day-group';
   group.dataset.date = dateKey;
-  group.innerHTML = `<div class="day-group-label">${fmtDateLabel(dateKey)}</div><div class="day-group-grid"></div>`;
+  group.innerHTML = `<div class="day-group-label">${fmtDateLabel(dateKey)}<span class="day-group-count"></span></div><div class="day-group-grid"></div>`;
   const sentinel = document.getElementById('gallery-sentinel');
   grid.insertBefore(group, sentinel);
   return group;
@@ -756,6 +792,7 @@ function appendCardToGroup(rec) {
   const card    = buildThumbCard(rec);
   if (!recPassesFilter(rec)) card.style.display = 'none';
   inner.appendChild(card);
+  updateGalleryCounts();
 }
 
 function prependCard(rec) {
@@ -772,13 +809,14 @@ function prependCard(rec) {
     group = document.createElement('div');
     group.className = 'day-group';
     group.dataset.date = dateKey;
-    group.innerHTML = `<div class="day-group-label">${fmtDateLabel(dateKey)}</div><div class="day-group-grid"></div>`;
+    group.innerHTML = `<div class="day-group-label">${fmtDateLabel(dateKey)}<span class="day-group-count"></span></div><div class="day-group-grid"></div>`;
     grid.insertBefore(group, grid.firstChild);
   }
   const inner = group.querySelector('.day-group-grid');
   const card  = buildThumbCard(rec);
   if (!recPassesFilter(rec)) card.style.display = 'none';
   inner.insertBefore(card, inner.firstChild);
+  updateGalleryCounts();
 
   // Auto-select the new completed image only when "Show latest" is enabled,
   // the record passes the filter, AND the live card is not currently selected
@@ -802,6 +840,7 @@ function applyGalleryFilter() {
       .some(c => c.style.display !== 'none');
     group.style.display = anyVisible ? '' : 'none';
   });
+  updateGalleryCounts();
 }
 
 // ---------------------------------------------------------------------------
@@ -903,6 +942,7 @@ function _removeRecordLocally(id) {
       if (group) group.remove();
     }
   }
+  updateGalleryCounts();
 
   // If this record is currently selected, close the detail panel.
   if (selectedID === id) closeDetail();

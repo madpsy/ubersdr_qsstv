@@ -302,6 +302,23 @@ header h1 {
   margin: 0;
 }
 
+#gallery-total-count {
+  font-size: 0.72rem;
+  color: #6a9fd8;
+  background: #0f3460;
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  /* Hide when empty so it doesn't take up space before images load */
+  min-width: 0;
+}
+
+#gallery-total-count:empty {
+  display: none;
+}
+
 #gallery-complete-label,
 #gallery-show-latest-label {
   display: flex;
@@ -354,6 +371,25 @@ header h1 {
   line-height: 1;
   /* Sit on top of the border */
   transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.day-group-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f3460;
+  color: #6a9fd8;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 1px 5px;
+  border-radius: 8px;
+  min-width: 1.6em;
+  text-transform: none;
+  line-height: 1.4;
 }
 
 .day-group-grid {
