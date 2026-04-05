@@ -2297,7 +2297,13 @@ function connectRxLive(label) {
       }
 
       updateLiveLabel();
-      bar.style.width = '0%';
+      // For catch-up rx_start events, initialise the progress bar to the
+      // current scan-line position rather than resetting to 0%.
+      if (d.catchup && d.line > 0 && d.total > 0) {
+        bar.style.width = Math.round((d.line + 1) / d.total * 100) + '%';
+      } else {
+        bar.style.width = '0%';
+      }
       img.src = '';
 
       // Lock the wrapper to the known SSTV frame dimensions so the box
@@ -2329,7 +2335,11 @@ function connectRxLive(label) {
       rxLiveBarSNRValues = [];
       rxLiveBarCurrentLine = 0;
       rxLiveBarTotalLines = (d.height && d.height > 0) ? d.height : 0;
-      rxLiveStartMs = Date.now();
+      // For catch-up rx_start events (page loaded mid-decode), use the
+      // original start timestamp from the server so the countdown reflects
+      // how much time has already elapsed.  Fall back to Date.now() for a
+      // genuine new rx_start where d.rx_start is absent or zero.
+      rxLiveStartMs = (d.rx_start && d.rx_start > 0) ? d.rx_start : Date.now();
       rxLiveImageTimeMs = (d.image_time_ms && d.image_time_ms > 0) ? d.image_time_ms : 0;
 
       // Start a 1-second countdown ticker if we know the total duration.

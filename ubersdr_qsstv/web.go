@@ -771,7 +771,11 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 				"audio_mode": snap.AudioMode,
 				"rx_start":   snap.RxStartMs,
 				"t":          snap.RxStartMs,
-				"catchup":    true, // diagnostic flag — not used by the client
+				// line/total let the client initialise the progress bar and
+				// countdown to the correct mid-decode position.
+				"line":    snap.LatestLine,
+				"total":   snap.TotalLines,
+				"catchup": true, // signals the client this is a mid-decode catch-up
 			}
 			if snap.ImageTimeMs > 0 {
 				startPayload["image_time_ms"] = snap.ImageTimeMs
