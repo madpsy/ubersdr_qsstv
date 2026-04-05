@@ -108,13 +108,13 @@ type wsMessage struct {
 // ---------------------------------------------------------------------------
 
 type snrStats struct {
-	AvgDB        float32
-	MinDB        float32
-	MaxDB        float32
-	BasebandAvg  float32
-	NoiseAvg     float32
-	SampleCount  int
-	Series       []snrPoint // 1-second bucketed time series
+	AvgDB       float32
+	MinDB       float32
+	MaxDB       float32
+	BasebandAvg float32
+	NoiseAvg    float32
+	SampleCount int
+	Series      []snrPoint // 1-second bucketed time series
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +388,7 @@ func (a *snrAccumulator) stats() snrStats {
 type imgState int
 
 const (
-	imgIdle      imgState = iota
+	imgIdle imgState = iota
 	imgReceiving
 )
 
@@ -436,15 +436,15 @@ type imageRecord struct {
 }
 
 type imageTracker struct {
-	state      imgState
-	accum      *snrAccumulator
-	startTime  time.Time
-	freqHz     int
-	audioMode  string
-	outputDir  string
-	eventCh    chan<- imageRecord
-	rxLiveHub  *sseHub      // fan-out of partial-image SSE events; may be nil
-	metrics    *metricsStore // may be nil
+	state     imgState
+	accum     *snrAccumulator
+	startTime time.Time
+	freqHz    int
+	audioMode string
+	outputDir string
+	eventCh   chan<- imageRecord
+	rxLiveHub *sseHub       // fan-out of partial-image SSE events; may be nil
+	metrics   *metricsStore // may be nil
 	// dimensions of the image currently being received (from rx_start)
 	rxWidth  int
 	rxHeight int
@@ -746,19 +746,19 @@ type instance struct {
 	qsstvPath  string
 	sessionID  string
 
-	eventCh    chan<- imageRecord
-	sseHub     *sseHub            // may be nil until set after store creation
-	audioHub   *audioBroadcastHub // fan-out of live PCM to preview listeners
-	fftHub     *fftBroadcastHub   // fan-out of FFT magnitude frames to SSE listeners
-	rxLiveHub  *sseHub            // fan-out of rx_line partial-image SSE events
-	metrics    *metricsStore      // may be nil
+	eventCh   chan<- imageRecord
+	sseHub    *sseHub            // may be nil until set after store creation
+	audioHub  *audioBroadcastHub // fan-out of live PCM to preview listeners
+	fftHub    *fftBroadcastHub   // fan-out of FFT magnitude frames to SSE listeners
+	rxLiveHub *sseHub            // fan-out of rx_line partial-image SSE events
+	metrics   *metricsStore      // may be nil
 
 	mu            sync.Mutex
 	running       bool
 	stopping      bool
 	startedAt     time.Time
 	reconnections int
-	status        string // "running" | "reconnecting" | "stopped"
+	status        string        // "running" | "reconnecting" | "stopped"
 	receiver      *receiverInfo // populated from /api/description after connect
 
 	// loopCancel cancels the context passed to the current start() goroutine,
@@ -908,7 +908,9 @@ func (inst *instance) checkConnection() (bool, error) {
 
 // runOnce performs one full connect → QSSTV launch → stream → disconnect cycle.
 // Returns true if the caller should reconnect.
-func (inst *instance) runOnce() (reconnect bool) {
+// ctx is the outer start() context; when it is cancelled (restart/retune),
+// runOnce closes the WebSocket and returns false so start() exits cleanly.
+func (inst *instance) runOnce(ctx context.Context) (reconnect bool) {
 	// Generate a fresh UUID for every connection attempt so the UberSDR server
 	// never sees the same session ID twice (even across reconnects).
 	inst.mu.Lock()
@@ -1008,15 +1010,16 @@ func (inst *instance) runOnce() (reconnect bool) {
 		}
 	}()
 
-	// Keepalive goroutine
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Keepalive goroutine — uses a local child context so it stops when
+	// runOnce returns, without cancelling the outer start() context.
+	localCtx, localCancel := context.WithCancel(ctx)
+	defer localCancel()
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-localCtx.Done():
 				return
 			case <-ticker.C:
 				if err := conn.WriteJSON(map[string]string{"type": "ping"}); err != nil {
@@ -1024,6 +1027,17 @@ func (inst *instance) runOnce() (reconnect bool) {
 					return
 				}
 			}
+		}
+	}()
+
+	// Context-cancellation watcher: when the outer ctx is cancelled (restart/
+	// retune), close the WebSocket so conn.ReadMessage() unblocks immediately.
+	// localCtx.Done() is used as the "runOnce finished normally" escape hatch.
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-localCtx.Done():
 		}
 	}()
 
@@ -1041,7 +1055,7 @@ func (inst *instance) runOnce() (reconnect bool) {
 	inst.mu.Unlock()
 
 	defer func() {
-		cancel()
+		localCancel()
 		// Kill qsstv child
 		if cmd.Process != nil {
 			_ = cmd.Process.Signal(syscall.SIGTERM)
@@ -1072,6 +1086,12 @@ func (inst *instance) runOnce() (reconnect bool) {
 
 		msgType, msg, err := conn.ReadMessage()
 		if err != nil {
+			// If the outer context was cancelled (restart/retune), don't
+			// reconnect — the new start() goroutine owns the connection.
+			if ctx.Err() != nil {
+				log.Printf("[%s] context cancelled — exiting runOnce without reconnect", inst.label)
+				return false
+			}
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				log.Printf("[%s] server closed connection", inst.label)
 			} else {
@@ -1091,30 +1111,30 @@ func (inst *instance) runOnce() (reconnect bool) {
 				continue
 			}
 			if firstPacket {
-					log.Printf("[%s] receiving audio: %d Hz, %d channel(s)", inst.label, pkt.sampleRate, pkt.channels)
-					firstPacket = false
-					// Store stream format for /api/audio/preview WAV header.
-					inst.streamMu.Lock()
-					inst.streamSampleRate = pkt.sampleRate
-					inst.streamChannels   = pkt.channels
-					inst.streamMu.Unlock()
-				}
+				log.Printf("[%s] receiving audio: %d Hz, %d channel(s)", inst.label, pkt.sampleRate, pkt.channels)
+				firstPacket = false
+				// Store stream format for /api/audio/preview WAV header.
+				inst.streamMu.Lock()
+				inst.streamSampleRate = pkt.sampleRate
+				inst.streamChannels = pkt.channels
+				inst.streamMu.Unlock()
+			}
 
 			// Accumulate SNR from v2 full-header packets
-				if pkt.hasSigInfo {
-					snrDB := pkt.basebandDBFS - pkt.noiseDBFS
-					tracker.accum.add(pkt.basebandDBFS, pkt.noiseDBFS)
-					// Broadcast live SNR to SSE clients at ~250 ms cadence
-					if inst.sseHub != nil && time.Since(lastSNRBroadcast) >= 250*time.Millisecond {
-						lastSNRBroadcast = time.Now()
-						payload, _ := json.Marshal(map[string]interface{}{
-							"label":  inst.label,
-							"snr_db": snrDB,
-							"t":      time.Now().UnixMilli(),
-						})
-						inst.sseHub.broadcast(fmt.Sprintf("event: snr\ndata: %s\n\n", payload))
-					}
+			if pkt.hasSigInfo {
+				snrDB := pkt.basebandDBFS - pkt.noiseDBFS
+				tracker.accum.add(pkt.basebandDBFS, pkt.noiseDBFS)
+				// Broadcast live SNR to SSE clients at ~250 ms cadence
+				if inst.sseHub != nil && time.Since(lastSNRBroadcast) >= 250*time.Millisecond {
+					lastSNRBroadcast = time.Now()
+					payload, _ := json.Marshal(map[string]interface{}{
+						"label":  inst.label,
+						"snr_db": snrDB,
+						"t":      time.Now().UnixMilli(),
+					})
+					inst.sseHub.broadcast(fmt.Sprintf("event: snr\ndata: %s\n\n", payload))
 				}
+			}
 
 			// Downmix stereo (wfm) to mono
 			pcmData := pkt.pcm
@@ -1204,7 +1224,7 @@ func (inst *instance) start(ctx context.Context) {
 		inst.status = "reconnecting"
 		inst.mu.Unlock()
 
-		reconnect := inst.runOnce()
+		reconnect := inst.runOnce(ctx)
 
 		inst.mu.Lock()
 		running = inst.running
