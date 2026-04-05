@@ -239,6 +239,7 @@ let deletedIDs = new Set(); // IDs explicitly deleted this session — guards pr
 let selectedID = null;
 let galleryCompleteOnly = true; // mirrors the "Complete only" checkbox
 let galleryShowLatest   = true; // mirrors the "Show latest" checkbox
+let gallerySNRFilter    = true; // mirrors the "≥38 dB" SNR filter checkbox
 
 // Infinite-scroll pagination state
 const GALLERY_PAGE = 30;   // records per page
@@ -725,10 +726,16 @@ function imageSrc(rec) {
 // ---------------------------------------------------------------------------
 // Returns true if rec passes the current gallery filter.
 function recPassesFilter(rec) {
-  if (!galleryCompleteOnly) return true;
-  // Old sidecars without image_height: always show (no data to filter on).
-  if (!rec.image_height) return true;
-  return rec.lines_decoded >= rec.image_height * 0.95;
+  // Complete-only filter
+  if (galleryCompleteOnly) {
+    // Old sidecars without image_height: always show (no data to filter on).
+    if (rec.image_height && rec.lines_decoded < rec.image_height * 0.95) return false;
+  }
+  // SNR filter — hide images whose average SNR is known and below 38 dB
+  if (gallerySNRFilter) {
+    if (rec.snr_avg_db != null && rec.snr_avg_db < 38) return false;
+  }
+  return true;
 }
 
 function buildThumbCard(rec) {
@@ -845,8 +852,17 @@ function prependCard(rec) {
   if (deletedIDs.has(rec.id)) return;
   // Guard against duplicate insertions (e.g. SSE reconnect replays the event).
   if (allRecords.some(r => r.id === rec.id)) return;
-  // Add to allRecords so selectRecord() can find it by id.
+  // Always add to allRecords so selectRecord() can find it by id and so that
+  // resetAndReloadGallery() doesn't need to re-fetch when filters are toggled.
   allRecords.unshift(rec);
+
+  // If the record doesn't pass the current filters, don't insert a DOM card
+  // at all — this avoids fetching the thumbnail unnecessarily.
+  if (!recPassesFilter(rec)) {
+    updateGalleryCounts();
+    return;
+  }
+
   const dateKey = recDateKey(rec);
   const grid    = document.getElementById('gallery-grid');
   let group     = grid.querySelector(`.day-group[data-date="${dateKey}"]`);
@@ -859,17 +875,15 @@ function prependCard(rec) {
   }
   const inner = group.querySelector('.day-group-grid');
   const card  = buildThumbCard(rec);
-  if (!recPassesFilter(rec)) card.style.display = 'none';
   inner.insertBefore(card, inner.firstChild);
   updateGalleryCounts();
 
-  // Auto-select the new completed image only when "Show latest" is enabled,
-  // the record passes the filter, AND the user is not on the live panel or
-  // viewing a specific image they chose to look at.
+  // Auto-select the new completed image only when "Show latest" is enabled
+  // and the user is not on the live panel or viewing a specific image.
   // Never yank the user away from the live panel — they stay there to watch
   // for the next incoming image.
   // Never yank the user away from a specific image they are viewing.
-  if (recPassesFilter(rec) && galleryShowLatest && selectedID === null) {
+  if (galleryShowLatest && selectedID === null) {
     selectRecord(rec.id);
   }
 }
@@ -2563,11 +2577,22 @@ function pollStatus() {
 // ---------------------------------------------------------------------------
 // Paginated gallery load
 // ---------------------------------------------------------------------------
+// Build the query-string for /api/images reflecting the current filter state.
+function galleryFilterParams() {
+  const params = new URLSearchParams({
+    limit:  GALLERY_PAGE,
+    offset: galleryOffset,
+  });
+  if (galleryCompleteOnly) params.set('complete', '1');
+  if (gallerySNRFilter)    params.set('min_snr', '38');
+  return params.toString();
+}
+
 function loadMoreImages() {
   if (galleryLoading || galleryExhausted) return;
   galleryLoading = true;
 
-  fetch(BASE_PATH + `/api/images?limit=${GALLERY_PAGE}&offset=${galleryOffset}`)
+  fetch(BASE_PATH + `/api/images?${galleryFilterParams()}`)
     .then(r => r.json())
     .then(records => {
       if (!records || records.length === 0) {
@@ -2594,6 +2619,31 @@ function loadMoreImages() {
       console.error('load images:', err);
       galleryLoading = false;
     });
+}
+
+// Clear the gallery and reload from offset 0 with the current filter params.
+// Called whenever a filter checkbox changes.
+function resetAndReloadGallery() {
+  // Reset pagination state.
+  allRecords = [];
+  galleryOffset = 0;
+  galleryLoading = false;
+  galleryExhausted = false;
+  lastRenderedDate = null;
+
+  // Clear all day-group cards from the DOM (keep the sentinel and live card).
+  const grid = document.getElementById('gallery-grid');
+  if (grid) {
+    grid.querySelectorAll('.day-group').forEach(g => g.remove());
+  }
+  updateGalleryCounts();
+
+  // Close the detail panel if it was showing a now-filtered-out record.
+  if (selectedID !== null && selectedID !== 'live') {
+    closeDetail();
+  }
+
+  loadMoreImages();
 }
 
 function initGalleryScroll() {
@@ -2887,7 +2937,7 @@ document.addEventListener('DOMContentLoaded', () => {
     galleryCompleteOnly = completeOnlyCb.checked; // true by default (checked in HTML)
     completeOnlyCb.addEventListener('change', () => {
       galleryCompleteOnly = completeOnlyCb.checked;
-      applyGalleryFilter();
+      resetAndReloadGallery();
     });
   }
 
@@ -2897,6 +2947,16 @@ document.addEventListener('DOMContentLoaded', () => {
     galleryShowLatest = showLatestCb.checked; // true by default (checked in HTML)
     showLatestCb.addEventListener('change', () => {
       galleryShowLatest = showLatestCb.checked;
+    });
+  }
+
+  // "≥38 dB" SNR filter checkbox
+  const snrFilterCb = document.getElementById('gallery-snr-filter');
+  if (snrFilterCb) {
+    gallerySNRFilter = snrFilterCb.checked; // true by default (checked in HTML)
+    snrFilterCb.addEventListener('change', () => {
+      gallerySNRFilter = snrFilterCb.checked;
+      resetAndReloadGallery();
     });
   }
 

@@ -103,10 +103,13 @@
         <h2>Gallery</h2>
         <span id="gallery-total-count" title="Total visible images"></span>
         <label id="gallery-complete-label" title="Only show images with ≥95% of lines decoded">
-          <input type="checkbox" id="gallery-complete-only" checked> Complete only
+          <input type="checkbox" id="gallery-complete-only" checked> Complete
         </label>
         <label id="gallery-show-latest-label" title="Always jump to the newest image after a live decode completes">
-          <input type="checkbox" id="gallery-show-latest" checked> Show latest
+          <input type="checkbox" id="gallery-show-latest" checked> Latest
+        </label>
+        <label id="gallery-snr-filter-label" title="Only show images with average SNR ≥ 38 dB">
+          <input type="checkbox" id="gallery-snr-filter" checked> ≥38 dB
         </label>
       </div>
       <!-- Live card — always the first item in the gallery, outside day-groups -->

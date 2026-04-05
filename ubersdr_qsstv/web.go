@@ -165,18 +165,46 @@ func (s *imageStore) add(rec imageRecord) {
 	s.sseHub.broadcast(fmt.Sprintf("event: image\ndata: %s\n\n", data))
 }
 
-func (s *imageStore) list(limit, offset int) []imageRecord {
+// listFiltered returns up to limit records starting at offset, applying
+// optional server-side filters:
+//   - completeOnly: skip records where lines_decoded < image_height * 0.95
+//     (records with image_height == 0 are always included — old sidecars)
+//   - minSNR > 0:   skip records where snr_avg_db is known and below minSNR
+func (s *imageStore) listFiltered(limit, offset int, completeOnly bool, minSNR float64) []imageRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if offset >= len(s.records) {
-		return nil
+
+	out := make([]imageRecord, 0, limit)
+	skipped := 0 // records seen but not yet past the offset
+
+	for i := range s.records {
+		r := &s.records[i]
+
+		// Apply complete-only filter.
+		if completeOnly && r.ImageHeight > 0 {
+			if float64(r.LinesDecoded) < float64(r.ImageHeight)*0.95 {
+				continue
+			}
+		}
+
+		// Apply minimum SNR filter (only when SNR is known).
+		if minSNR > 0 && r.SNRAvgDB != 0 {
+			if float64(r.SNRAvgDB) < minSNR {
+				continue
+			}
+		}
+
+		// Skip until we reach the requested offset within the filtered set.
+		if skipped < offset {
+			skipped++
+			continue
+		}
+
+		out = append(out, *r)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
 	}
-	end := offset + limit
-	if end > len(s.records) || limit <= 0 {
-		end = len(s.records)
-	}
-	out := make([]imageRecord, end-offset)
-	copy(out, s.records[offset:end])
 	return out
 }
 
@@ -401,25 +429,33 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 		indexTmpl.Execute(w, map[string]string{"BasePath": basePath}) //nolint:errcheck
 	})
 
-	// GET /api/images?limit=N&offset=N
+	// GET /api/images?limit=N&offset=N[&complete=1][&min_snr=38]
 	mux.HandleFunc("/api/images", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		q := r.URL.Query()
 		limit := 50
 		offset := 0
-		if v := r.URL.Query().Get("limit"); v != "" {
+		if v := q.Get("limit"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				limit = n
 			}
 		}
-		if v := r.URL.Query().Get("offset"); v != "" {
+		if v := q.Get("offset"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 				offset = n
 			}
 		}
-		records := store.list(limit, offset)
+		completeOnly := q.Get("complete") == "1"
+		var minSNR float64
+		if v := q.Get("min_snr"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+				minSNR = f
+			}
+		}
+		records := store.listFiltered(limit, offset, completeOnly, minSNR)
 		if records == nil {
 			records = []imageRecord{}
 		}
