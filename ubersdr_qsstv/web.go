@@ -92,7 +92,19 @@ func (s *imageStore) loadExisting() {
 		log.Printf("imageStore.loadExisting: %v", err)
 		return
 	}
-	var loaded int
+
+	// Collect all valid records without holding the lock (pure I/O phase).
+	// Do NOT update byID here: each append may reallocate the backing array,
+	// making any pointer stored in byID immediately stale.  byID is rebuilt
+	// once after the sort, when the slice address is final.
+	var recs []imageRecord
+	s.mu.RLock()
+	deletedSnap := make(map[string]struct{}, len(s.deleted))
+	for k := range s.deleted {
+		deletedSnap[k] = struct{}{}
+	}
+	s.mu.RUnlock()
+
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -105,26 +117,26 @@ func (s *imageStore) loadExisting() {
 		if err := json.Unmarshal(data, &rec); err != nil {
 			continue
 		}
-		s.mu.Lock()
-		_, wasDel := s.deleted[rec.ID]
-		if !wasDel {
-			s.records = append(s.records, rec)
-			s.byID[rec.ID] = &s.records[len(s.records)-1]
-			loaded++
+		if _, wasDel := deletedSnap[rec.ID]; wasDel {
+			continue
 		}
-		s.mu.Unlock()
+		recs = append(recs, rec)
 	}
-	// Sort newest first
-	s.mu.Lock()
-	sort.Slice(s.records, func(i, j int) bool {
-		return s.records[i].RxEnd.After(s.records[j].RxEnd)
+
+	// Sort newest first, then commit to the store and build byID in one shot.
+	sort.Slice(recs, func(i, j int) bool {
+		return recs[i].RxEnd.After(recs[j].RxEnd)
 	})
-	// Rebuild byID after sort
+
+	s.mu.Lock()
+	s.records = recs
+	s.byID = make(map[string]*imageRecord, len(recs))
 	for i := range s.records {
 		s.byID[s.records[i].ID] = &s.records[i]
 	}
 	s.mu.Unlock()
-	log.Printf("imageStore: loaded %d existing records from %s", loaded, s.outputDir)
+
+	log.Printf("imageStore: loaded %d existing records from %s", len(recs), s.outputDir)
 }
 
 // add inserts a new record at the front and notifies SSE clients.
@@ -137,8 +149,14 @@ func (s *imageStore) add(rec imageRecord) {
 		s.mu.Unlock()
 		return
 	}
+	// Prepend by building a new slice.  This reallocates the backing array, so
+	// all existing byID pointers (which point into the old array) become stale.
+	// Rebuild the entire byID map after the reallocation.
 	s.records = append([]imageRecord{rec}, s.records...)
-	s.byID[rec.ID] = &s.records[0]
+	s.byID = make(map[string]*imageRecord, len(s.records))
+	for i := range s.records {
+		s.byID[s.records[i].ID] = &s.records[i]
+	}
 	s.mu.Unlock()
 
 	// Broadcast SSE event
@@ -477,13 +495,21 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 			store.mu.Lock()
 			store.deleted[id] = struct{}{}
 			delete(store.byID, id)
-			filtered := store.records[:0]
+			// Allocate a fresh slice — do NOT use store.records[:0] which shares
+			// the same backing array and causes aliasing corruption when the range
+			// loop reads positions that have already been overwritten by append.
+			filtered := make([]imageRecord, 0, len(store.records)-1)
 			for _, r := range store.records {
 				if r.ID != id {
 					filtered = append(filtered, r)
 				}
 			}
 			store.records = filtered
+			// Rebuild byID pointers after the slice was reallocated.
+			store.byID = make(map[string]*imageRecord, len(filtered))
+			for i := range store.records {
+				store.byID[store.records[i].ID] = &store.records[i]
+			}
 			store.mu.Unlock()
 
 			// Broadcast a delete event to all SSE clients so every open browser
