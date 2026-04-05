@@ -206,13 +206,24 @@ header h1 {
 /* ── Live gallery card — always the first item, above day-groups ── */
 #live-gallery-card {
   flex-shrink: 0;
-  margin: 8px 8px 0;
+  margin: 8px 8px 8px;
   cursor: pointer;
   position: relative;
-  /* Separator between live card and the scrollable gallery below */
-  padding-bottom: 8px;
-  border-bottom: 1px solid #1e3a6e;
-  margin-bottom: 0;
+}
+
+/* Separator line between the live card and the scrollable gallery below.
+   Uses a pseudo-element so it sits outside the card's border-box and doesn't
+   clip the card's own 2px selected border at the bottom. */
+#live-gallery-card::after {
+  content: '';
+  display: block;
+  position: absolute;
+  bottom: -9px;   /* sits in the 8px margin gap below the card */
+  left: -8px;     /* stretch to the panel edges (card has 8px side margins) */
+  right: -8px;
+  height: 1px;
+  background: #1e3a6e;
+  pointer-events: none;
 }
 
 #live-card-badge {
@@ -313,7 +324,7 @@ header h1 {
   flex: 1;
   overflow-y: auto;
   padding: 8px;
-  padding-top: 6px;
+  padding-top: 10px;  /* extra room so the first day-group label isn't clipped */
   /* Single column — day groups handle their own 2-col inner grid */
   display: flex;
   flex-direction: column;
