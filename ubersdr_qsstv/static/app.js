@@ -72,6 +72,39 @@ let authAuthenticated = false;
 // Queue of callbacks waiting for the user to authenticate.
 let authPendingCallbacks = [];
 
+const AUTH_STORAGE_KEY = 'ubersdr_ui_password';
+
+// Attempt to authenticate silently using a password string.
+// Returns a Promise that resolves true on success, false on failure.
+function _tryPassword(pw) {
+  return fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: pw }),
+  })
+    .then(r => {
+      if (!r.ok) return false;
+      authAuthenticated = true;
+      localStorage.setItem(AUTH_STORAGE_KEY, pw);
+      return true;
+    })
+    .catch(() => false);
+}
+
+// Try the password saved in localStorage silently.
+// Calls onSuccess() if it works, onFail() if not (or nothing stored).
+function tryStoredPassword(onSuccess, onFail) {
+  const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+  if (!stored) { onFail(); return; }
+  _tryPassword(stored).then(ok => {
+    if (ok) { onSuccess(); }
+    else {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      onFail();
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Auth modal
 // ---------------------------------------------------------------------------
@@ -107,6 +140,7 @@ function openAuthModal(onSuccess, onCancel) {
       })
       .then(() => {
         authAuthenticated = true;
+        localStorage.setItem(AUTH_STORAGE_KEY, pw);
         modal.classList.remove('open');
         submitBtn.disabled = false;
         submitBtn.textContent = 'Unlock';
@@ -116,6 +150,7 @@ function openAuthModal(onSuccess, onCancel) {
         for (const cb of cbs) cb.onSuccess();
       })
       .catch(err => {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
         errorEl.textContent = err.message || 'Incorrect password.';
         submitBtn.disabled = false;
         submitBtn.textContent = 'Unlock';
@@ -143,7 +178,7 @@ function openAuthModal(onSuccess, onCancel) {
 
 // requireAuth wraps an action: if auth is not needed (no password configured)
 // it shows a "not available" notice; if already authenticated it runs the action
-// immediately; otherwise it opens the password modal first.
+// immediately; otherwise tries the stored password silently, then opens the modal.
 function requireAuth(action) {
   if (!authPasswordConfigured) {
     // No password set — write actions are disabled.
@@ -154,9 +189,13 @@ function requireAuth(action) {
     action();
     return;
   }
-  openAuthModal(
-    () => action(),   // onSuccess — run the action
-    () => {},         // onCancel — do nothing
+  // Try the stored password silently before showing the modal.
+  tryStoredPassword(
+    () => action(),          // stored password worked — run action directly
+    () => openAuthModal(     // no stored password or it failed — show modal
+      () => action(),
+      () => {},
+    ),
   );
 }
 
@@ -2862,11 +2901,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Fetch auth status on boot so requireAuth() knows whether a password is
   // configured and whether the current session is already authenticated.
+  // If the session has expired but we have a stored password, re-authenticate
+  // silently so the user doesn't have to type it again.
   fetch('/api/auth/status')
     .then(r => r.json())
     .then(d => {
       authPasswordConfigured = !!d.password_configured;
       authAuthenticated      = !!d.authenticated;
+      if (authPasswordConfigured && !authAuthenticated) {
+        // Session expired (or new tab) — try stored password silently.
+        tryStoredPassword(() => {}, () => {});
+      }
     })
     .catch(() => {});
 
