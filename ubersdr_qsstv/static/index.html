@@ -4,8 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>UberSDR SSTV</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <link rel="stylesheet" href="/static/leaflet.css">
+  <script>window.BASE_PATH = "{{.BasePath}}";</script>
+  <link rel="stylesheet" href="{{.BasePath}}/static/style.css">
+  <link rel="stylesheet" href="{{.BasePath}}/static/leaflet.css">
 </head>
 <body>
   <header>
@@ -242,10 +243,10 @@
     </div>
   </div>
 
-  <script src="/static/chart.umd.min.js"></script>
-  <script src="/static/chartjs-adapter-date-fns.bundle.min.js"></script>
-  <script src="/static/leaflet.js"></script>
-  <script src="/static/app.js"></script>
-  <script src="/static/metrics.js"></script>
+  <script src="{{.BasePath}}/static/chart.umd.min.js"></script>
+  <script src="{{.BasePath}}/static/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="{{.BasePath}}/static/leaflet.js"></script>
+  <script src="{{.BasePath}}/static/app.js"></script>
+  <script src="{{.BasePath}}/static/metrics.js"></script>
 </body>
 </html>

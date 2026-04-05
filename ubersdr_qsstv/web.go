@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"io/fs"
 	"log"
@@ -250,8 +251,8 @@ func writeStreamingWAVHeader(w http.ResponseWriter, sampleRate, channels int) {
 	binary.LittleEndian.PutUint32(hdr[4:8], uint32(dataSize+36))
 	copy(hdr[8:12], "WAVE")
 	copy(hdr[12:16], "fmt ")
-	binary.LittleEndian.PutUint32(hdr[16:20], 16)                    // PCM chunk size
-	binary.LittleEndian.PutUint16(hdr[20:22], 1)                     // PCM format
+	binary.LittleEndian.PutUint32(hdr[16:20], 16) // PCM chunk size
+	binary.LittleEndian.PutUint16(hdr[20:22], 1)  // PCM format
 	binary.LittleEndian.PutUint16(hdr[22:24], uint16(channels))
 	binary.LittleEndian.PutUint32(hdr[24:28], uint32(sampleRate))
 	binary.LittleEndian.PutUint32(hdr[28:32], uint32(byteRate))
@@ -375,19 +376,29 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 	}
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 
-	// Root → index.html
+	// Root → index.html (served as a template so BASE_PATH can be injected)
+	indexTmpl, indexTmplErr := func() (*template.Template, error) {
+		data, err := staticFiles.ReadFile("static/index.html")
+		if err != nil {
+			return nil, err
+		}
+		return template.New("index").Parse(string(data))
+	}()
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
-		data, err := staticFiles.ReadFile("static/index.html")
-		if err != nil {
+		if indexTmplErr != nil {
 			http.Error(w, "index.html not found", 500)
 			return
 		}
+		// Derive the base path from X-Forwarded-Prefix (set by the addon proxy
+		// when strip_prefix is enabled).  Falls back to "" for direct access.
+		basePath := strings.TrimRight(r.Header.Get("X-Forwarded-Prefix"), "/")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(data)
+		indexTmpl.Execute(w, map[string]string{"BasePath": basePath}) //nolint:errcheck
 	})
 
 	// GET /api/images?limit=N&offset=N

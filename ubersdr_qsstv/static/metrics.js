@@ -1,6 +1,10 @@
 /* metrics.js — Decode statistics modal */
 'use strict';
 
+// Inherit BASE_PATH set by app.js (both scripts share the same window scope).
+// Falls back to '' when accessed directly without the proxy.
+const _metricsBasePath = (typeof BASE_PATH === 'string') ? BASE_PATH : '';
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -42,7 +46,7 @@ function fetchMetrics(period) {
     if (el) el.textContent = '…';
   });
 
-  fetch('/api/metrics?period=' + encodeURIComponent(period))
+  fetch(_metricsBasePath + '/api/metrics?period=' + encodeURIComponent(period))
     .then(r => {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();

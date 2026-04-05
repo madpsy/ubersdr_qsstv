@@ -1,6 +1,10 @@
 /* ubersdr_qsstv — gallery + detail panel + SSE client */
 'use strict';
 
+// Base path injected by the server (empty string when accessed directly,
+// e.g. "/addon/sstv" when behind the ka9q_ubersdr addon proxy).
+const BASE_PATH = (typeof window.BASE_PATH === 'string') ? window.BASE_PATH : '';
+
 // ---------------------------------------------------------------------------
 // SSTV mode name translation table
 // Maps the short names reported by QSSTV to their full human-readable names.
@@ -77,7 +81,7 @@ const AUTH_STORAGE_KEY = 'ubersdr_ui_password';
 // Attempt to authenticate silently using a password string.
 // Returns a Promise that resolves true on success, false on failure.
 function _tryPassword(pw) {
-  return fetch('/api/auth/login', {
+  return fetch(BASE_PATH + '/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password: pw }),
@@ -129,7 +133,7 @@ function openAuthModal(onSuccess, onCancel) {
     if (!pw) { errorEl.textContent = 'Please enter a password.'; return; }
     submitBtn.disabled = true;
     submitBtn.textContent = '…';
-    fetch('/api/auth/login', {
+    fetch(BASE_PATH + '/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: pw }),
@@ -708,12 +712,12 @@ function renderLiveRxMap(cty) {
 }
 
 function thumbSrc(rec) {
-  if (rec.thumb) return '/images/' + rec.thumb;
-  return '/images/' + rec.file;
+  if (rec.thumb) return BASE_PATH + '/images/' + rec.thumb;
+  return BASE_PATH + '/images/' + rec.file;
 }
 
 function imageSrc(rec) {
-  return '/images/' + rec.file;
+  return BASE_PATH + '/images/' + rec.file;
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,7 +1012,7 @@ function _doDeleteRecord(id) {
   const btn = document.getElementById('detail-delete-btn');
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
 
-  fetch(`/api/images/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  fetch(BASE_PATH + `/api/images/${encodeURIComponent(id)}`, { method: 'DELETE' })
     .then(r => {
       if (!r.ok) return r.text().then(t => { throw new Error(t); });
       return r.json();
@@ -1508,7 +1512,7 @@ function startAudioPreview(label) {
   audioStreamGen++;
 
   audioPreviewLabel = label || '';
-  const url = '/api/audio/preview' + (audioPreviewLabel ? '?label=' + encodeURIComponent(audioPreviewLabel) : '');
+  const url = BASE_PATH + '/api/audio/preview' + (audioPreviewLabel ? '?label=' + encodeURIComponent(audioPreviewLabel) : '');
 
   // Create the AudioContext on the very first call (requires a user gesture).
   // On subsequent calls (reconnects) we reuse the existing context so that
@@ -1923,7 +1927,7 @@ function loadInstancesList() {
   if (dl.dataset.loaded) return;
   dl.dataset.loaded = '1';
 
-  fetch('/api/ubersdr/instances')
+  fetch(BASE_PATH + '/api/ubersdr/instances')
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then(data => {
       const instances = data.instances || [];
@@ -1990,7 +1994,7 @@ function initURLWidget() {
   function _doApplyURL(raw, statusEl) {
     if (statusEl) { statusEl.textContent = '…'; statusEl.className = ''; }
 
-    fetch('/api/config/url', {
+    fetch(BASE_PATH + '/api/config/url', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ url: raw }),
@@ -2011,7 +2015,7 @@ function initURLWidget() {
         // already playing) so the browser fetches a fresh WAV header at the
         // new connection's actual sample rate.
         // Re-fetch status to get the updated instance label first.
-        fetch('/api/status')
+        fetch(BASE_PATH + '/api/status')
           .then(r => r.json())
           .then(statusData => {
             applyStatusData(statusData);
@@ -2116,7 +2120,7 @@ function applyFrequency() {
 }
 
 function _doApplyFrequency(label, freqHz, statusEl) {
-  fetch(`/api/instances/${encodeURIComponent(label)}/frequency`, {
+  fetch(BASE_PATH + `/api/instances/${encodeURIComponent(label)}/frequency`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ freq_hz: freqHz }),
@@ -2151,7 +2155,7 @@ function _doApplyFrequency(label, freqHz, statusEl) {
 // ---------------------------------------------------------------------------
 function connectSSE() {
   const dot = document.getElementById('live-dot');
-  const es = new EventSource('/api/live');
+  const es = new EventSource(BASE_PATH + '/api/live');
 
   es.addEventListener('image', e => {
     try {
@@ -2234,7 +2238,7 @@ function connectRxLive(label) {
   }
 
   rxLiveLabel = label || '';
-  const url = '/api/rx/live' + (rxLiveLabel ? '?label=' + encodeURIComponent(rxLiveLabel) : '');
+  const url = BASE_PATH + '/api/rx/live' + (rxLiveLabel ? '?label=' + encodeURIComponent(rxLiveLabel) : '');
   rxLiveES = new EventSource(url);
 
   const labelEl  = document.getElementById('rx-live-label');
@@ -2540,7 +2544,7 @@ function applyStatusData(data) {
 }
 
 function pollStatus() {
-  fetch('/api/status')
+  fetch(BASE_PATH + '/api/status')
     .then(r => r.json())
     .then(applyStatusData)
     .catch(() => {});
@@ -2553,7 +2557,7 @@ function loadMoreImages() {
   if (galleryLoading || galleryExhausted) return;
   galleryLoading = true;
 
-  fetch(`/api/images?limit=${GALLERY_PAGE}&offset=${galleryOffset}`)
+  fetch(BASE_PATH + `/api/images?limit=${GALLERY_PAGE}&offset=${galleryOffset}`)
     .then(r => r.json())
     .then(records => {
       if (!records || records.length === 0) {
@@ -2844,7 +2848,7 @@ function hsvToRgb(h, s, v) {
 function connectFFT(label) {
   if (fftES) { fftES.close(); fftES = null; }
   fftLabel = label || '';
-  const url = '/api/fft' + (fftLabel ? '?label=' + encodeURIComponent(fftLabel) : '');
+  const url = BASE_PATH + '/api/fft' + (fftLabel ? '?label=' + encodeURIComponent(fftLabel) : '');
   fftES = new EventSource(url);
 
   fftES.addEventListener('fft', e => {
@@ -2895,7 +2899,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Poll status once immediately; on the first successful response start the
   // live RX preview and audio panel for the first instance we find.
-  fetch('/api/status')
+  fetch(BASE_PATH + '/api/status')
     .then(r => r.json())
     .then(data => {
       applyStatusData(data);
@@ -2922,7 +2926,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // configured and whether the current session is already authenticated.
   // If the session has expired but we have a stored password, re-authenticate
   // silently so the user doesn't have to type it again.
-  fetch('/api/auth/status')
+  fetch(BASE_PATH + '/api/auth/status')
     .then(r => r.json())
     .then(d => {
       authPasswordConfigured = !!d.password_configured;
