@@ -152,3 +152,18 @@ if [[ "${PASS_IS_NEW}" == "1" ]]; then
 else
     echo "  UI password loaded from ${INSTALL_DIR}/${CONFIG_PASS_FILE}"
 fi
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  UBERSDR PROXY CONFIGURATION"
+echo ""
+echo "  This addon can be added as an UberSDR Proxy via the Admin interface:"
+echo ""
+echo "    Name              : sstv"
+echo "    Host              : sstv"
+echo "    Port              : 6091"
+echo "    Enabled           : true"
+echo "    Strip prefix      : true"
+echo "    Rewrite websocket : false"
+echo "    Rate Limit        : 100"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
