@@ -20,5 +20,12 @@ services:
       # CTY_FILE: ""
       # UI_PASSWORD: ""   # Set a password to enable write actions (tune, delete, change URL).
                           # Leave empty (default) to disable all write actions.
+    networks:
+      - sdr-network
     volumes:
       - ./sstv-images:/data
+
+networks:
+  sdr-network:
+    external: true
+    name: ubersdr_sdr-network
