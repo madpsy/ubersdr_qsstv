@@ -1,6 +1,7 @@
 services:
   ubersdr_qsstv:
     image: madpsy/ubersdr_qsstv:latest
+    container_name: sstv
     restart: unless-stopped
     ports:
       - "6091:6091"
