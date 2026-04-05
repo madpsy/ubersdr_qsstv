@@ -839,6 +839,8 @@ function prependCard(rec) {
   // Guard: if this record was deleted in the current session, discard it so
   // it doesn't reappear (e.g. after an SSE reconnect replays the image event).
   if (deletedIDs.has(rec.id)) return;
+  // Guard against duplicate insertions (e.g. SSE reconnect replays the event).
+  if (allRecords.some(r => r.id === rec.id)) return;
   // Add to allRecords so selectRecord() can find it by id.
   allRecords.unshift(rec);
   const dateKey = recDateKey(rec);
@@ -858,9 +860,12 @@ function prependCard(rec) {
   updateGalleryCounts();
 
   // Auto-select the new completed image only when "Show latest" is enabled,
-  // the record passes the filter, AND the live card is not currently selected
-  // (we don't want to yank the user away from watching the live panel).
-  if (recPassesFilter(rec) && galleryShowLatest && selectedID !== 'live') {
+  // the record passes the filter, AND the user is not on the live panel or
+  // viewing a specific image they chose to look at.
+  // Never yank the user away from the live panel — they stay there to watch
+  // for the next incoming image.
+  // Never yank the user away from a specific image they are viewing.
+  if (recPassesFilter(rec) && galleryShowLatest && selectedID === null) {
     selectRecord(rec.id);
   }
 }
@@ -2280,8 +2285,10 @@ function connectRxLive(label) {
       // Update live gallery card — clear image, set mode, start receiving state.
       updateLiveCard('', currentMode, '', currentFreq);
 
-      // Auto-select the live card if "Show latest" is on or nothing is selected.
-      if (galleryShowLatest || selectedID === null) {
+      // Auto-select the live card only if nothing is currently selected.
+      // Never yank the user away from a specific image or the live panel they
+      // are already viewing — the live gallery card thumbnail updates regardless.
+      if (selectedID === null) {
         selectRecord('live');
       }
 
