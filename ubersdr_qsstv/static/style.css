@@ -264,7 +264,8 @@ header h1 {
 #live-card-img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: top center; /* SSTV decodes top-to-bottom — anchor to top so partial images don't stretch */
   display: block;
   border-radius: 4px 4px 0 0;
 }
