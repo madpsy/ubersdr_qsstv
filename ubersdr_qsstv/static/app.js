@@ -192,6 +192,7 @@ function showAuthNotice(msg) {
 // State
 // ---------------------------------------------------------------------------
 let allRecords = [];       // all records loaded so far (newest first)
+let deletedIDs = new Set(); // IDs explicitly deleted this session — guards prependCard() and SSE image handler
 let selectedID = null;
 let galleryCompleteOnly = true; // mirrors the "Complete only" checkbox
 let galleryShowLatest   = true; // mirrors the "Show latest" checkbox
@@ -759,6 +760,9 @@ function appendCardToGroup(rec) {
 
 function prependCard(rec) {
   // New completed image — always goes at the very top of the day-groups.
+  // Guard: if this record was deleted in the current session, discard it so
+  // it doesn't reappear (e.g. after an SSE reconnect replays the image event).
+  if (deletedIDs.has(rec.id)) return;
   // Add to allRecords so selectRecord() can find it by id.
   allRecords.unshift(rec);
   const dateKey = recDateKey(rec);
@@ -863,6 +867,47 @@ function deleteRecord(id) {
   requireAuth(() => _doDeleteRecord(id));
 }
 
+// Remove a record from the local state and DOM.  Called both from
+// _doDeleteRecord() (the deleting tab) and from the SSE 'delete' event
+// handler (all other tabs).
+function _removeRecordLocally(id) {
+  // Track in the session-level deleted set so prependCard() and the SSE
+  // 'image' handler don't re-insert it if the event is replayed.
+  deletedIDs.add(id);
+
+  // Remove from local allRecords array and adjust the pagination offset so
+  // the next paginated fetch doesn't skip a record to fill the gap.
+  const idx = allRecords.findIndex(r => r.id === id);
+  if (idx !== -1) {
+    allRecords.splice(idx, 1);
+    if (galleryOffset > 0) galleryOffset--;
+    // Only reset galleryExhausted if there are genuinely more records on the
+    // server to fetch.  After decrementing galleryOffset, allRecords.length
+    // equals galleryOffset, so the old condition (< galleryOffset) was always
+    // true — incorrectly triggering a wasted fetch every time.
+    // The correct signal is: we were exhausted AND we still have a full page
+    // loaded, meaning there might be a record just beyond the old window.
+    if (galleryExhausted && allRecords.length >= GALLERY_PAGE) {
+      galleryExhausted = false;
+    }
+  }
+
+  // Remove the gallery card from the DOM.
+  const card = document.querySelector(`.thumb-card[data-id="${id}"]`);
+  if (card) {
+    const inner = card.parentElement; // .day-group-grid
+    card.remove();
+    // If the day group is now empty, remove it too.
+    if (inner && inner.querySelectorAll('.thumb-card').length === 0) {
+      const group = inner.closest('.day-group');
+      if (group) group.remove();
+    }
+  }
+
+  // If this record is currently selected, close the detail panel.
+  if (selectedID === id) closeDetail();
+}
+
 function _doDeleteRecord(id) {
   const btn = document.getElementById('detail-delete-btn');
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
@@ -873,34 +918,11 @@ function _doDeleteRecord(id) {
       return r.json();
     })
     .then(() => {
-      // Remove from local allRecords array.
-      // Decrement galleryOffset so the next paginated fetch doesn't skip a
-      // record to fill the gap left by this deletion.
-      const idx = allRecords.findIndex(r => r.id === id);
-      if (idx !== -1) {
-        allRecords.splice(idx, 1);
-        if (galleryOffset > 0) galleryOffset--;
-        // If we had declared the gallery exhausted but now have fewer records
-        // than the offset, allow another page to be fetched.
-        if (galleryExhausted && allRecords.length < galleryOffset) {
-          galleryExhausted = false;
-        }
-      }
-
-      // Remove the gallery card
-      const card = document.querySelector(`.thumb-card[data-id="${id}"]`);
-      if (card) {
-        const inner = card.parentElement; // .day-group-grid
-        card.remove();
-        // If the day group is now empty, remove it too
-        if (inner && inner.querySelectorAll('.thumb-card').length === 0) {
-          const group = inner.closest('.day-group');
-          if (group) group.remove();
-        }
-      }
-
-      // Close the detail panel (also resets selectedID)
-      closeDetail();
+      // The server will broadcast an SSE 'delete' event which will call
+      // _removeRecordLocally() on all tabs including this one.  Call it
+      // directly here too so the UI responds immediately without waiting
+      // for the SSE round-trip.
+      _removeRecordLocally(id);
     })
     .catch(err => {
       console.error('delete failed:', err);
@@ -2038,9 +2060,20 @@ function connectSSE() {
   es.addEventListener('image', e => {
     try {
       const rec = JSON.parse(e.data);
-      prependCard(rec);
+      // prependCard() itself checks deletedIDs, but guard here too so we
+      // never even parse/process a record that was deleted this session.
+      if (!deletedIDs.has(rec.id)) prependCard(rec);
     } catch (err) {
       console.error('SSE parse error', err);
+    }
+  });
+
+  es.addEventListener('delete', e => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.id) _removeRecordLocally(d.id);
+    } catch (err) {
+      console.error('SSE delete parse error', err);
     }
   });
 

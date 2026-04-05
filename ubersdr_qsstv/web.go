@@ -83,7 +83,9 @@ func newImageStore(outputDir string) *imageStore {
 }
 
 // loadExisting scans the output directory for existing .json sidecar files
-// and populates the store on startup.
+// and populates the store on startup.  Records whose IDs are already in the
+// deleted set (populated before this call) are silently skipped so that
+// images deleted before a restart do not reappear.
 func (s *imageStore) loadExisting() {
 	entries, err := os.ReadDir(s.outputDir)
 	if err != nil {
@@ -104,10 +106,13 @@ func (s *imageStore) loadExisting() {
 			continue
 		}
 		s.mu.Lock()
-		s.records = append(s.records, rec)
-		s.byID[rec.ID] = &s.records[len(s.records)-1]
+		_, wasDel := s.deleted[rec.ID]
+		if !wasDel {
+			s.records = append(s.records, rec)
+			s.byID[rec.ID] = &s.records[len(s.records)-1]
+			loaded++
+		}
 		s.mu.Unlock()
-		loaded++
 	}
 	// Sort newest first
 	s.mu.Lock()
@@ -429,17 +434,20 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 					os.Remove(filepath.Join(outputDir, name)) //nolint:errcheck
 				}
 			}
-			// Sidecar JSON: derive from the image filename first; if that yields
-			// nothing (empty File field) fall back to the record ID so the sidecar
-			// is always removed regardless of how the record was stored.
-			sidecarDeleted := false
+
+			// Sidecar JSON: try the base-name-derived path first, then fall back
+			// to a full directory scan matching by ID.  Both paths are always
+			// attempted so that partial-name-match failures don't leave orphaned
+			// sidecars that would cause the record to reappear after a restart.
+			sidecarPath := ""
 			if rec.File != "" {
 				base := strings.TrimSuffix(rec.File, filepath.Ext(rec.File))
-				if err := os.Remove(filepath.Join(outputDir, base+".json")); err == nil {
-					sidecarDeleted = true
+				candidate := filepath.Join(outputDir, base+".json")
+				if err := os.Remove(candidate); err == nil {
+					sidecarPath = candidate
 				}
 			}
-			if !sidecarDeleted {
+			if sidecarPath == "" {
 				// Fallback: scan for any .json whose decoded ID matches — handles
 				// edge cases where File is empty or the base name doesn't match.
 				if entries, err := os.ReadDir(outputDir); err == nil {
@@ -457,15 +465,17 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 						}
 						if json.Unmarshal(data, &tmp) == nil && tmp.ID == id {
 							os.Remove(p) //nolint:errcheck
+							sidecarPath = p
 							break
 						}
 					}
 				}
 			}
 
-			// Remove from in-memory store.
+			// Remove from in-memory store and mark as deleted so fan-in goroutines
+			// and loadExisting() on restart cannot re-insert this record.
 			store.mu.Lock()
-			store.deleted[id] = struct{}{} // prevent fan-in goroutine from re-inserting
+			store.deleted[id] = struct{}{}
 			delete(store.byID, id)
 			filtered := store.records[:0]
 			for _, r := range store.records {
@@ -475,6 +485,11 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 			}
 			store.records = filtered
 			store.mu.Unlock()
+
+			// Broadcast a delete event to all SSE clients so every open browser
+			// tab removes the card immediately without needing a page refresh.
+			deleteEvt, _ := json.Marshal(map[string]string{"id": id})
+			store.sseHub.broadcast(fmt.Sprintf("event: delete\ndata: %s\n\n", deleteEvt))
 
 			log.Printf("deleted image %s", id)
 			w.Header().Set("Content-Type", "application/json")
