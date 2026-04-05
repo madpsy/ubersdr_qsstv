@@ -435,6 +435,24 @@ type imageRecord struct {
 	LinesDecoded int `json:"lines_decoded,omitempty"`
 }
 
+// liveRxState holds the in-progress reception state so new /api/rx/live
+// subscribers can be caught up immediately when they connect mid-decode.
+type liveRxState struct {
+	SSTVMode    string `json:"sstv_mode"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	FreqHz      int    `json:"freq_hz"`
+	AudioMode   string `json:"audio_mode"`
+	RxStartMs   int64  `json:"rx_start"`
+	ImageTimeMs int    `json:"image_time_ms,omitempty"`
+	// Latest partial JPEG (base64) and scan-line position for catch-up.
+	LatestJPEGB64 string `json:"jpeg_b64,omitempty"`
+	LatestLine    int    `json:"line"`
+	TotalLines    int    `json:"total"`
+	// Callsign if already decoded mid-image.
+	Callsign string `json:"callsign,omitempty"`
+}
+
 type imageTracker struct {
 	state     imgState
 	accum     *snrAccumulator
@@ -457,6 +475,14 @@ type imageTracker struct {
 	// watchdog: cancelled when rx_saved/rx_discarded arrives; fires a synthetic
 	// rx_end to web clients if the QSSTV sync processor never declares SYNCLOST.
 	watchdogCancel context.CancelFunc
+	// imageTimeMs from the rx_start event — stored so the watchdog goroutine
+	// and liveSnapshot() can reference it without re-parsing the event.
+	imageTimeMs int
+	// sstvMode is the SSTV mode string from the current rx_start event.
+	sstvMode string
+	// latestJPEGB64 is the most recent partial JPEG received via rx_line.
+	// Stored so new /api/rx/live subscribers can be caught up immediately.
+	latestJPEGB64 string
 }
 
 func newImageTracker(freqHz int, audioMode, outputDir string, eventCh chan<- imageRecord, rxLiveHub *sseHub, ms *metricsStore) *imageTracker {
@@ -472,6 +498,27 @@ func newImageTracker(freqHz int, audioMode, outputDir string, eventCh chan<- ima
 	}
 }
 
+// liveSnapshot returns the current in-progress reception state, or nil if idle.
+// Safe to call from any goroutine.
+func (t *imageTracker) liveSnapshot() *liveRxState {
+	if t.state != imgReceiving {
+		return nil
+	}
+	return &liveRxState{
+		SSTVMode:      t.sstvMode,
+		Width:         t.rxWidth,
+		Height:        t.rxHeight,
+		FreqHz:        t.freqHz,
+		AudioMode:     t.audioMode,
+		RxStartMs:     t.startTime.UnixMilli(),
+		ImageTimeMs:   t.imageTimeMs,
+		LatestJPEGB64: t.latestJPEGB64,
+		LatestLine:    t.lastLine,
+		TotalLines:    t.rxHeight,
+		Callsign:      t.pendingCallsign,
+	}
+}
+
 func (t *imageTracker) handleEvent(ev headlessEvent) {
 	switch ev.Event {
 	case "rx_start":
@@ -482,6 +529,9 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 		t.rxHeight = ev.Height
 		t.lastLine = 0
 		t.pendingCallsign = ""
+		t.imageTimeMs = ev.ImageTimeMs
+		t.latestJPEGB64 = ""
+		t.sstvMode = ev.SSTVMode
 
 		// Cancel any previous watchdog (shouldn't be active, but be safe).
 		if t.watchdogCancel != nil {
@@ -569,6 +619,10 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 		if ev.Line+1 > t.lastLine {
 			t.lastLine = ev.Line + 1
 		}
+		// Cache the latest partial JPEG for catch-up on new subscribers.
+		if ev.JPEGB64 != "" {
+			t.latestJPEGB64 = ev.JPEGB64
+		}
 		// Forward partial JPEG to any live preview clients.
 		if t.rxLiveHub != nil && ev.JPEGB64 != "" {
 			payload, _ := json.Marshal(map[string]interface{}{
@@ -586,6 +640,8 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 			t.watchdogCancel()
 			t.watchdogCancel = nil
 		}
+		t.latestJPEGB64 = ""
+		t.sstvMode = ""
 		if t.state == imgReceiving {
 			// If QSSTV's queued callsign signal lost the race with rx_saved
 			// (AutoConnection cross-thread delivery), fall back to the callsign
@@ -632,6 +688,8 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 		}
 		t.state = imgIdle
 		t.pendingCallsign = ""
+		t.latestJPEGB64 = ""
+		t.sstvMode = ""
 		if t.rxLiveHub != nil {
 			payload, _ := json.Marshal(map[string]interface{}{
 				"event": "rx_discarded",
@@ -773,6 +831,24 @@ type instance struct {
 	// fftMu guards instFFT so runOnce() goroutines don't race on it.
 	fftMu   sync.Mutex
 	instFFT *audioFFT // persists across runOnce() calls to preserve averaging state
+
+	// trackerMu guards tracker so liveRxSnapshot() can safely read it from
+	// the web handler goroutine while runOnce() writes to it.
+	trackerMu sync.RWMutex
+	tracker   *imageTracker // current image tracker; replaced on each runOnce()
+}
+
+// liveRxSnapshot returns the current in-progress reception state for this
+// instance, or nil if no image is currently being received.
+// Safe to call from any goroutine.
+func (inst *instance) liveRxSnapshot() *liveRxState {
+	inst.trackerMu.RLock()
+	t := inst.tracker
+	inst.trackerMu.RUnlock()
+	if t == nil {
+		return nil
+	}
+	return t.liveSnapshot()
 }
 
 func newInstance(freqHz int, audioMode, ubersdrURL, password, outputDir, qsstvPath string, eventCh chan<- imageRecord, ms *metricsStore) *instance {
@@ -996,6 +1072,10 @@ func (inst *instance) runOnce(ctx context.Context) (reconnect bool) {
 
 	// Goroutine: read JSON events from eventsR
 	tracker := newImageTracker(inst.freqHz, inst.audioMode, inst.outputDir, inst.eventCh, inst.rxLiveHub, inst.metrics)
+	// Store the tracker on the instance so liveRxSnapshot() can read it.
+	inst.trackerMu.Lock()
+	inst.tracker = tracker
+	inst.trackerMu.Unlock()
 	eventsScanner := bufio.NewScanner(eventsR)
 	go func() {
 		defer eventsR.Close()

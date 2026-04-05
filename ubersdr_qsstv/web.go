@@ -757,6 +757,56 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 		fmt.Fprint(w, ": connected\n\n")
 		flusher.Flush()
 
+		// If a decode is already in progress when this client connects, send a
+		// synthetic rx_start (and the latest partial image if available) so the
+		// browser can show the live panel immediately without waiting for the
+		// next rx_start event.
+		if snap := inst.liveRxSnapshot(); snap != nil {
+			startPayload := map[string]interface{}{
+				"event":      "rx_start",
+				"width":      snap.Width,
+				"height":     snap.Height,
+				"sstv_mode":  snap.SSTVMode,
+				"freq_hz":    snap.FreqHz,
+				"audio_mode": snap.AudioMode,
+				"rx_start":   snap.RxStartMs,
+				"t":          snap.RxStartMs,
+				"catchup":    true, // diagnostic flag — not used by the client
+			}
+			if snap.ImageTimeMs > 0 {
+				startPayload["image_time_ms"] = snap.ImageTimeMs
+			}
+			if data, err := json.Marshal(startPayload); err == nil {
+				fmt.Fprintf(w, "event: rx_start\ndata: %s\n\n", data)
+			}
+			// Send the latest partial image so the panel shows something immediately.
+			if snap.LatestJPEGB64 != "" {
+				linePayload := map[string]interface{}{
+					"event":    "rx_line",
+					"line":     snap.LatestLine,
+					"total":    snap.TotalLines,
+					"jpeg_b64": snap.LatestJPEGB64,
+				}
+				if data, err := json.Marshal(linePayload); err == nil {
+					fmt.Fprintf(w, "event: rx_line\ndata: %s\n\n", data)
+				}
+			}
+			// Send callsign if already decoded.
+			if snap.Callsign != "" {
+				cty := GetCallsignInfo(snap.Callsign)
+				callPayload := map[string]interface{}{
+					"event":    "rx_callsign",
+					"callsign": snap.Callsign,
+					"cty":      cty,
+					"t":        snap.RxStartMs,
+				}
+				if data, err := json.Marshal(callPayload); err == nil {
+					fmt.Fprintf(w, "event: rx_callsign\ndata: %s\n\n", data)
+				}
+			}
+			flusher.Flush()
+		}
+
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
