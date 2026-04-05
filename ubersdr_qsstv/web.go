@@ -429,10 +429,38 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 					os.Remove(filepath.Join(outputDir, name)) //nolint:errcheck
 				}
 			}
-			// Sidecar JSON: same base name as the image file with .json extension.
+			// Sidecar JSON: derive from the image filename first; if that yields
+			// nothing (empty File field) fall back to the record ID so the sidecar
+			// is always removed regardless of how the record was stored.
+			sidecarDeleted := false
 			if rec.File != "" {
 				base := strings.TrimSuffix(rec.File, filepath.Ext(rec.File))
-				os.Remove(filepath.Join(outputDir, base+".json")) //nolint:errcheck
+				if err := os.Remove(filepath.Join(outputDir, base+".json")); err == nil {
+					sidecarDeleted = true
+				}
+			}
+			if !sidecarDeleted {
+				// Fallback: scan for any .json whose decoded ID matches — handles
+				// edge cases where File is empty or the base name doesn't match.
+				if entries, err := os.ReadDir(outputDir); err == nil {
+					for _, e := range entries {
+						if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+							continue
+						}
+						p := filepath.Join(outputDir, e.Name())
+						data, err := os.ReadFile(p)
+						if err != nil {
+							continue
+						}
+						var tmp struct {
+							ID string `json:"id"`
+						}
+						if json.Unmarshal(data, &tmp) == nil && tmp.ID == id {
+							os.Remove(p) //nolint:errcheck
+							break
+						}
+					}
+				}
 			}
 
 			// Remove from in-memory store.

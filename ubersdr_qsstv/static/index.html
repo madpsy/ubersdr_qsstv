@@ -107,15 +107,31 @@
           <input type="checkbox" id="gallery-show-latest" checked> Show latest
         </label>
       </div>
+      <!-- Live card — always the first item in the gallery, outside day-groups -->
+      <div id="live-gallery-card" class="thumb-card live-card">
+        <div id="live-card-badge">● LIVE</div>
+        <div id="live-card-img-wrap">
+          <img id="live-card-img" src="" alt="Live">
+          <div id="live-card-idle">Waiting for signal…</div>
+        </div>
+        <div class="thumb-meta" id="live-card-meta">
+          <div class="thumb-meta-top">
+            <span class="mode-group"><span class="mode" id="live-card-mode">—</span></span>
+            <span class="call" id="live-card-call"></span>
+          </div>
+          <div class="freq" id="live-card-freq"></div>
+        </div>
+      </div>
       <div id="gallery-grid">
         <div id="gallery-sentinel"></div>
       </div>
     </div>
 
     <div id="detail-panel">
-      <!-- Live RX preview — shown while an image is being decoded -->
+      <!-- Live RX detail — shown when the live card is selected -->
       <div id="rx-live-panel">
-        <h2>Now Receiving <span id="rx-live-label"></span></h2>
+        <h2 id="rx-live-heading">Live <span id="rx-live-label"></span></h2>
+        <div id="rx-live-idle">Waiting for signal…</div>
         <div id="rx-live-progress-row">
           <div id="rx-live-progress-wrap">
             <div id="rx-live-progress-bar"></div>
@@ -143,7 +159,7 @@
         </div>
       </div>
 
-      <div id="detail-empty">Select an image from the gallery, or wait for a live decode to begin</div>
+      <div id="detail-empty">Select an image from the gallery</div>
 
       <!-- Lightbox modal — shown when clicking any SSTV image -->
       <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer">

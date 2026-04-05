@@ -758,8 +758,7 @@ function appendCardToGroup(rec) {
 }
 
 function prependCard(rec) {
-  // New live image — always goes at the very top.
-  // If today's group exists, prepend into it; otherwise create it first.
+  // New completed image — always goes at the very top of the day-groups.
   // Add to allRecords so selectRecord() can find it by id.
   allRecords.unshift(rec);
   const dateKey = recDateKey(rec);
@@ -777,9 +776,10 @@ function prependCard(rec) {
   if (!recPassesFilter(rec)) card.style.display = 'none';
   inner.insertBefore(card, inner.firstChild);
 
-  // Auto-select the new image when "Show latest" is enabled and the record
-  // passes the current filter, or when nothing is selected yet.
-  if (recPassesFilter(rec) && (galleryShowLatest || selectedID === null)) {
+  // Auto-select the new completed image only when "Show latest" is enabled,
+  // the record passes the filter, AND the live card is not currently selected
+  // (we don't want to yank the user away from watching the live panel).
+  if (recPassesFilter(rec) && galleryShowLatest && selectedID !== 'live') {
     selectRecord(rec.id);
   }
 }
@@ -844,9 +844,14 @@ function closeLightbox() {
 function closeDetail() {
   selectedID = null;
   document.querySelectorAll('.thumb-card').forEach(c => c.classList.remove('selected'));
+  const liveCard = document.getElementById('live-gallery-card');
+  if (liveCard) liveCard.classList.remove('selected');
   document.getElementById('detail-empty').style.display = '';
   const content = document.getElementById('detail-content');
   content.classList.remove('visible');
+  // Also hide the live panel
+  const livePanel = document.getElementById('rx-live-panel');
+  if (livePanel) livePanel.classList.remove('visible');
   // Destroy SNR chart so it doesn't hold a stale canvas reference
   if (snrChart) { snrChart.destroy(); snrChart = null; }
   // Reset delete button state so it's ready for the next selection
@@ -868,9 +873,19 @@ function _doDeleteRecord(id) {
       return r.json();
     })
     .then(() => {
-      // Remove from local allRecords array
+      // Remove from local allRecords array.
+      // Decrement galleryOffset so the next paginated fetch doesn't skip a
+      // record to fill the gap left by this deletion.
       const idx = allRecords.findIndex(r => r.id === id);
-      if (idx !== -1) allRecords.splice(idx, 1);
+      if (idx !== -1) {
+        allRecords.splice(idx, 1);
+        if (galleryOffset > 0) galleryOffset--;
+        // If we had declared the gallery exhausted but now have fewer records
+        // than the offset, allow another page to be fetched.
+        if (galleryExhausted && allRecords.length < galleryOffset) {
+          galleryExhausted = false;
+        }
+      }
 
       // Remove the gallery card
       const card = document.querySelector(`.thumb-card[data-id="${id}"]`);
@@ -901,15 +916,36 @@ let detailImgRO = null;
 function selectRecord(id) {
   selectedID = id;
 
-  // Highlight selected card
+  // Highlight selected gallery card (regular cards)
   document.querySelectorAll('.thumb-card').forEach(c => {
     c.classList.toggle('selected', c.dataset.id === id);
   });
 
+  // Highlight / deselect the live card
+  const liveCard = document.getElementById('live-gallery-card');
+  if (liveCard) liveCard.classList.toggle('selected', id === 'live');
+
+  const livePanel  = document.getElementById('rx-live-panel');
+  const detailContent = document.getElementById('detail-content');
+  const detailEmpty   = document.getElementById('detail-empty');
+
+  // ── Live card selected ──────────────────────────────────────────────────
+  if (id === 'live') {
+    detailEmpty.style.display = 'none';
+    detailContent.classList.remove('visible');
+    if (livePanel) livePanel.classList.add('visible');
+    // Destroy stale SNR chart so it doesn't hold a stale canvas reference
+    if (snrChart) { snrChart.destroy(); snrChart = null; }
+    return;
+  }
+
+  // ── Regular gallery card selected ──────────────────────────────────────
+  if (livePanel) livePanel.classList.remove('visible');
+
   const rec = allRecords.find(r => r.id === id);
   if (!rec) return;
 
-  document.getElementById('detail-empty').style.display = 'none';
+  detailEmpty.style.display = 'none';
   const content = document.getElementById('detail-content');
   content.classList.add('visible');
 
@@ -2037,9 +2073,30 @@ function connectSSE() {
 }
 
 // ---------------------------------------------------------------------------
-// Live RX preview — connects to /api/rx/live and updates the "Now Receiving"
-// panel with each partial JPEG as it arrives.
+// Live RX preview — connects to /api/rx/live and updates the live gallery
+// card thumbnail and the "Now Receiving" detail panel.
 // ---------------------------------------------------------------------------
+
+// Helper: update the live gallery card thumbnail and meta strip.
+function updateLiveCard(jpegB64, mode, callsign, freq) {
+  const card    = document.getElementById('live-gallery-card');
+  const cardImg = document.getElementById('live-card-img');
+  const modeEl  = document.getElementById('live-card-mode');
+  const callEl  = document.getElementById('live-card-call');
+  const freqEl  = document.getElementById('live-card-freq');
+  if (cardImg && jpegB64 != null) {
+    cardImg.src = jpegB64 ? 'data:image/jpeg;base64,' + jpegB64 : '';
+  }
+  if (modeEl  && mode     != null) modeEl.textContent  = mode     || '—';
+  if (callEl  && callsign != null) callEl.textContent   = callsign || '';
+  if (freqEl  && freq     != null) freqEl.textContent   = freq     || '';
+  if (card    && jpegB64  != null) {
+    // Show/hide the idle overlay based on whether we have image data.
+    if (jpegB64) card.classList.add('receiving');
+    else         card.classList.remove('receiving');
+  }
+}
+
 function connectRxLive(label) {
   // Disconnect any existing subscription first.
   if (rxLiveES) {
@@ -2051,7 +2108,6 @@ function connectRxLive(label) {
   const url = '/api/rx/live' + (rxLiveLabel ? '?label=' + encodeURIComponent(rxLiveLabel) : '');
   rxLiveES = new EventSource(url);
 
-  const panel    = document.getElementById('rx-live-panel');
   const labelEl  = document.getElementById('rx-live-label');
   const bar      = document.getElementById('rx-live-progress-bar');
   const imgWrap  = document.getElementById('rx-live-image-wrap');
@@ -2068,25 +2124,43 @@ function connectRxLive(label) {
     renderSNRBar(liveBar, rxLiveBarSNRValues, rxLiveBarTotalLines, rxLiveBarCurrentLine);
   }
 
-  // Track current mode/callsign so we can update the header label.
+  // Track current mode/callsign/freq so we can update the live card meta.
   let currentMode = '';
   let currentCallsign = '';
+  let currentFreq = '';
 
   function updateLiveLabel() {
     const parts = [];
     if (currentMode) parts.push(currentMode);
     if (currentCallsign) parts.push(currentCallsign);
-    labelEl.textContent = parts.length > 0 ? '— ' + parts.join(' · ') : '';
+    if (labelEl) labelEl.textContent = parts.length > 0 ? '— ' + parts.join(' · ') : '';
+    // Keep the gallery card meta in sync.
+    updateLiveCard(null, currentMode, currentCallsign, currentFreq);
   }
 
   rxLiveES.addEventListener('rx_start', e => {
     try {
       const d = JSON.parse(e.data);
-      // Show the panel and reset state.
+      // Reset state.
       currentMode = sstvModeName(d.sstv_mode) || '';
       currentCallsign = '';
+      currentFreq = d.freq_hz
+        ? fmtFreq(d.freq_hz) + (d.audio_mode ? ' ' + d.audio_mode.toUpperCase() : '')
+        : '';
       rxLiveActive = true;
-      panel.classList.add('active');
+
+      // Mark the live detail panel as actively receiving (shows content, hides idle msg).
+      const liveDetailPanel = document.getElementById('rx-live-panel');
+      if (liveDetailPanel) liveDetailPanel.classList.add('receiving');
+
+      // Update live gallery card — clear image, set mode, start receiving state.
+      updateLiveCard('', currentMode, '', currentFreq);
+
+      // Auto-select the live card if "Show latest" is on or nothing is selected.
+      if (galleryShowLatest || selectedID === null) {
+        selectRecord('live');
+      }
+
       updateLiveLabel();
       bar.style.width = '0%';
       img.src = '';
@@ -2099,9 +2173,7 @@ function connectRxLive(label) {
       img.style.aspectRatio = '';
 
       // Populate meta table with what we know so far.
-      const freqStr = d.freq_hz
-        ? fmtFreq(d.freq_hz) + (d.audio_mode ? ' ' + d.audio_mode.toUpperCase() : '')
-        : '—';
+      const freqStr = currentFreq || '—';
       const rxStartStr = d.rx_start
         ? fmtTime(new Date(d.rx_start).toISOString())
         : fmtTime(new Date().toISOString());
@@ -2203,9 +2275,10 @@ function connectRxLive(label) {
       if (d.total > 0) {
         bar.style.width = Math.round((d.line + 1) / d.total * 100) + '%';
       }
-      // Update the live image with the partial JPEG.
+      // Update both the detail panel image and the live gallery card thumbnail.
       if (d.jpeg_b64) {
         img.src = 'data:image/jpeg;base64,' + d.jpeg_b64;
+        updateLiveCard(d.jpeg_b64, null, null, null);
       }
       // Track the current scan-line position (1-based) for the SNR bar fill.
       if (d.total > 0) rxLiveBarCurrentLine = d.line + 1;
@@ -2266,25 +2339,43 @@ function connectRxLive(label) {
     // Disconnect the bar ResizeObserver — no more redraws needed.
     if (liveBarRO) { liveBarRO.disconnect(); liveBarRO = null; }
 
-    // Hide panel after a short delay so the user sees the completed image.
+    // Reset the live gallery card and detail panel to idle state after a short
+    // delay so the user sees the final frame before it clears.
     setTimeout(() => {
-      panel.classList.remove('active');
+      // Only clear if we're not already in a new reception.
+      if (!rxLiveActive) {
+        updateLiveCard('', currentMode, currentCallsign, currentFreq);
+        const card = document.getElementById('live-gallery-card');
+        if (card) card.classList.remove('receiving');
+        // Remove receiving class from detail panel so idle message shows.
+        const liveDetailPanel = document.getElementById('rx-live-panel');
+        if (liveDetailPanel) liveDetailPanel.classList.remove('receiving');
+      }
       img.src = '';
       bar.style.width = '0%';
       currentMode = '';
       currentCallsign = '';
+      currentFreq = '';
+      if (labelEl) labelEl.textContent = '';
     }, 4000);
   });
 
   rxLiveES.addEventListener('rx_discarded', () => {
-    // Image was discarded (too short) — hide panel immediately.
+    // Image was discarded (too short) — reset immediately.
     rxLiveActive = false;
     if (liveBarRO) { liveBarRO.disconnect(); liveBarRO = null; }
-    panel.classList.remove('active');
+    updateLiveCard('', '', '', '');
+    const card = document.getElementById('live-gallery-card');
+    if (card) card.classList.remove('receiving');
+    // Remove receiving class from detail panel so idle message shows.
+    const liveDetailPanel = document.getElementById('rx-live-panel');
+    if (liveDetailPanel) liveDetailPanel.classList.remove('receiving');
     img.src = '';
     bar.style.width = '0%';
     currentMode = '';
     currentCallsign = '';
+    currentFreq = '';
+    if (labelEl) labelEl.textContent = '';
   });
 
   rxLiveES.onerror = () => {
@@ -2347,9 +2438,11 @@ function loadMoreImages() {
       if (records.length < GALLERY_PAGE) galleryExhausted = true;
       galleryLoading = false;
 
-      // Auto-select the very first record on initial load
-      if (galleryOffset === records.length && allRecords.length > 0) {
-        selectRecord(allRecords[0].id);
+      // On initial load, select the live card by default (it's always first).
+      // Only fall back to the first gallery record if nothing is selected yet
+      // and the live card hasn't already been selected by an rx_start event.
+      if (galleryOffset === records.length && selectedID === null) {
+        selectRecord('live');
       }
     })
     .catch(err => {
@@ -2704,6 +2797,12 @@ document.addEventListener('DOMContentLoaded', () => {
     })
     .catch(() => {});
 
+  // Live gallery card click — select the live detail view
+  const liveGalleryCard = document.getElementById('live-gallery-card');
+  if (liveGalleryCard) {
+    liveGalleryCard.addEventListener('click', () => selectRecord('live'));
+  }
+
   // Detail close button
   const closeBtn = document.getElementById('detail-close-btn');
   if (closeBtn) {
@@ -2711,10 +2810,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Delete button — single listener; reads selectedID at click time
+  // Guard: don't try to delete the live sentinel.
   const deleteBtnBoot = document.getElementById('detail-delete-btn');
   if (deleteBtnBoot) {
     deleteBtnBoot.addEventListener('click', () => {
-      if (selectedID) deleteRecord(selectedID);
+      if (selectedID && selectedID !== 'live') deleteRecord(selectedID);
     });
   }
 
