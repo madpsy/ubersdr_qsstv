@@ -983,8 +983,20 @@ function _removeRecordLocally(id) {
   }
   updateGalleryCounts();
 
-  // If this record is currently selected, close the detail panel.
-  if (selectedID === id) closeDetail();
+  // If this record is currently selected, close the detail panel and then
+  // auto-select the next available gallery card so the detail view doesn't
+  // go blank after a deletion.
+  if (selectedID === id) {
+    closeDetail();
+    // Find the first visible thumb-card remaining in the gallery and select it.
+    const grid = document.getElementById('gallery-grid');
+    if (grid) {
+      const nextCard = grid.querySelector('.thumb-card:not([style*="display: none"]):not([style*="display:none"])');
+      if (nextCard && nextCard.dataset.id) {
+        selectRecord(nextCard.dataset.id);
+      }
+    }
+  }
 }
 
 function _doDeleteRecord(id) {
