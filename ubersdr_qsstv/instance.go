@@ -909,6 +909,12 @@ func (inst *instance) checkConnection() (bool, error) {
 // runOnce performs one full connect → QSSTV launch → stream → disconnect cycle.
 // Returns true if the caller should reconnect.
 func (inst *instance) runOnce() (reconnect bool) {
+	// Generate a fresh UUID for every connection attempt so the UberSDR server
+	// never sees the same session ID twice (even across reconnects).
+	inst.mu.Lock()
+	inst.sessionID = uuid.New().String()
+	inst.mu.Unlock()
+
 	allowed, err := inst.checkConnection()
 	if err != nil {
 		log.Printf("[%s] error: %v", inst.label, err)

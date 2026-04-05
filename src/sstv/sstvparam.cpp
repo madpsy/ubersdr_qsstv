@@ -186,6 +186,8 @@ void printActiveSSTVParam(bool) {}
 esstvMode lookupVIS(unsigned int vc)
 {
 	if(vc==0) return NOTVALID;
+  // SC2 modes disabled — they produce frequent false decodes on quiet bands
+  if(vc==0xBB || vc==0x3F || vc==0xB7) return NOTVALID;
   esstvMode t=M1;
   do
     {

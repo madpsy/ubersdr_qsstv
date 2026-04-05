@@ -614,6 +614,7 @@ bool syncProcessor::findMatch()
     //      addToLog (QString(" checking match for syncArrayIndex %1 at %2").arg(syncArrayIndex).arg(syncArray[syncArrayIndex].end),LOGSYNCMATCH);
     for(i=idxStart;i<=idxEnd;i++)
     {
+      if(i==SC2_60 || i==SC2_120 || i==SC2_180) continue; // SC2 disabled: false decodes on quiet bands
       syncWidth=getSyncWidth((esstvMode)i ,modifiedClock);
       if(addToMatch((esstvMode)i))
       {
@@ -804,6 +805,7 @@ void syncProcessor::clearMatchArray()
   int i,j;
   for(i=idxStart;i<=idxEnd;i++)
   {
+    if(i==SC2_60 || i==SC2_120 || i==SC2_180) continue; // SC2 disabled: false decodes on quiet bands
     for(j=0;j<matchArray[i].count();j++)
     {
       removeMatchArrayChain((esstvMode)i,0);
@@ -833,6 +835,7 @@ void syncProcessor::cleanupMatchArray()
   //  quint16 lnbr=0;
   for(i=idxStart;i<=idxEnd;i++)
   {
+    if(i==SC2_60 || i==SC2_120 || i==SC2_180) continue; // SC2 disabled: false decodes on quiet bands
     for(j=0;j<matchArray[i].count();)
     {
       if(activeChainPtr!=matchArray[i][j])
