@@ -7,7 +7,7 @@ services:
       - "6091:6091"
     environment:
       # UberSDR base URL
-      UBERSDR_URL: "http://172.20.0.1:8080"
+      UBERSDR_URL: "http://ubersdr:8080"
       # Comma-separated freq:mode pairs, e.g. 14230000:usb,21335000:usb
       UBERSDR_CHANNELS: "14230000:usb"
       # Uncomment and set as needed:

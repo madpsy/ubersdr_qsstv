@@ -45,7 +45,7 @@ All configuration is via environment variables in `docker-compose.yml`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `UBERSDR_URL` | `http://172.20.0.1:8080` | UberSDR base URL |
+| `UBERSDR_URL` | `http://ubersdr:8080` | UberSDR base URL |
 | `UBERSDR_CHANNELS` | `14230000:usb` | Comma-separated `freq:mode` pairs, e.g. `14230000:usb,21335000:usb` |
 | `UBERSDR_PASS` | _(empty)_ | UberSDR bypass password |
 | `OUTPUT_DIR` | `/data` | Output directory for images inside the container |

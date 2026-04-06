@@ -52,7 +52,7 @@ func envFloat64Or(key string, def float64) float64 {
 func main() {
 	var channels channelFlag
 
-	rawURL := flag.String("url", envOr("UBERSDR_URL", "http://172.20.0.1:8080"),
+	rawURL := flag.String("url", envOr("UBERSDR_URL", "http://ubersdr:8080"),
 		"UberSDR base URL (env: UBERSDR_URL)")
 	flag.Var(&channels, "channel",
 		"freq:mode pair, e.g. 14230000:usb (repeatable; env: UBERSDR_CHANNELS)")
@@ -90,7 +90,7 @@ func main() {
 	if len(channels) == 0 {
 		fmt.Fprintf(os.Stderr, "error: at least one -channel freq:mode is required\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: ubersdr_qsstv [flags]\n\n")
-		fmt.Fprintf(os.Stderr, "  -url          string   UberSDR base URL (default: http://172.20.0.1:8080)\n")
+		fmt.Fprintf(os.Stderr, "  -url          string   UberSDR base URL (default: http://ubersdr:8080)\n")
 		fmt.Fprintf(os.Stderr, "  -channel      freq:mode  e.g. -channel 14230000:usb (repeatable)\n")
 		fmt.Fprintf(os.Stderr, "  -output-dir   string   Output directory (default: /data)\n")
 		fmt.Fprintf(os.Stderr, "  -pass         string   UberSDR bypass password\n")

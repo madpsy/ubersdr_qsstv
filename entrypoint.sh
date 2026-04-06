@@ -2,7 +2,7 @@
 # entrypoint.sh — translate environment variables into ubersdr_qsstv flags
 #
 # Environment variables:
-#   UBERSDR_URL       UberSDR base URL (default: http://172.20.0.1:8080)
+#   UBERSDR_URL       UberSDR base URL (default: http://ubersdr:8080)
 #   UBERSDR_CHANNELS  Comma-separated freq:mode pairs  e.g. 14230000:usb,21335000:usb
 #   UBERSDR_PASS      UberSDR bypass password
 #   OUTPUT_DIR        Output directory for images and metadata (default: /data)
