@@ -1448,6 +1448,7 @@ function renderSNRChart(rec) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       parsing: false,
       plugins: {
         legend: { labels: { color: '#aaa', font: { size: 11 } } },

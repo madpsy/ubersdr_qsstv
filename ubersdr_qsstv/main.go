@@ -74,6 +74,12 @@ func main() {
 		"Receiver longitude for origin map (env: RECEIVER_LON)")
 	uiPassword := flag.String("ui-password", envOr("UI_PASSWORD", ""),
 		"Password required for write actions in the web UI (env: UI_PASSWORD; empty = write actions disabled)")
+	cleanupPartialDays := flag.Int("cleanup-partial-days", envIntOr("CLEANUP_PARTIAL_DAYS", 1),
+		"Delete partial images (< 95% decoded) older than N days; 0 = disabled (env: CLEANUP_PARTIAL_DAYS)")
+	cleanupSNRDays := flag.Int("cleanup-snr-days", envIntOr("CLEANUP_SNR_DAYS", 7),
+		"Delete low-SNR images (< 38 dB avg) older than N days; 0 = disabled (env: CLEANUP_SNR_DAYS)")
+	cleanupAllDays := flag.Int("cleanup-all-days", envIntOr("CLEANUP_ALL_DAYS", 30),
+		"Delete ALL images older than N days regardless of quality; 0 = disabled (env: CLEANUP_ALL_DAYS)")
 
 	flag.Parse()
 
@@ -101,10 +107,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "                         (required for audio output device selection in Chrome/Edge)\n")
 		fmt.Fprintf(os.Stderr, "  -receiver-lat float    Receiver latitude\n")
 		fmt.Fprintf(os.Stderr, "  -receiver-lon float    Receiver longitude\n")
-		fmt.Fprintf(os.Stderr, "  -ui-password  string   Password for write actions in the web UI (empty = disabled)\n\n")
+		fmt.Fprintf(os.Stderr, "  -ui-password          string   Password for write actions in the web UI (empty = disabled)\n")
+		fmt.Fprintf(os.Stderr, "  -cleanup-partial-days int      Delete partial images older than N days (0=disabled, default 7)\n")
+		fmt.Fprintf(os.Stderr, "  -cleanup-snr-days     int      Delete low-SNR images older than N days (0=disabled, default 7)\n")
+		fmt.Fprintf(os.Stderr, "  -cleanup-all-days     int      Delete ALL images older than N days (0=disabled, default 30)\n\n")
 		fmt.Fprintf(os.Stderr, "Environment variables: UBERSDR_URL, UBERSDR_CHANNELS, OUTPUT_DIR,\n")
 		fmt.Fprintf(os.Stderr, "  UBERSDR_PASS, QSSTV_BIN, CTY_FILE, WEB_PORT, WEB_TLS, RECEIVER_LAT, RECEIVER_LON,\n")
-		fmt.Fprintf(os.Stderr, "  UI_PASSWORD\n\n")
+		fmt.Fprintf(os.Stderr, "  UI_PASSWORD, CLEANUP_PARTIAL_DAYS, CLEANUP_SNR_DAYS, CLEANUP_ALL_DAYS\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  ubersdr_qsstv -url http://sdr.example.com:8080 \\\n")
 		fmt.Fprintf(os.Stderr, "                -channel 14230000:usb \\\n")
@@ -154,6 +163,11 @@ func main() {
 	// Build image store first so we can hand the SSE hub to instances
 	store := newImageStore(*outputDir)
 	store.loadExisting()
+
+	// Start background cleanup workers (no-ops if their day thresholds are 0).
+	startPartialCleanup(store, *outputDir, *cleanupPartialDays)
+	startSNRCleanup(store, *outputDir, *cleanupSNRDays)
+	startAgeCleanup(store, *outputDir, *cleanupAllDays)
 
 	// Build metrics store — loads existing metrics.jsonl from disk.
 	// If the file is absent or empty (first run after upgrade), backfill from

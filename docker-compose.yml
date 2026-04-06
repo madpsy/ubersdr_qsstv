@@ -20,6 +20,15 @@ services:
       # CTY_FILE: ""
       # UI_PASSWORD: ""   # Set a password to enable write actions (tune, delete, change URL).
                           # Leave empty (default) to disable all write actions.
+      #
+      # Automatic cleanup — runs every 5 minutes.  Set any value to 0 to disable that job.
+      CLEANUP_PARTIAL_DAYS: "1"    # Delete images where the signal was lost mid-frame
+                                   # (fewer than 95% of lines decoded) after this many days.
+                                   # These are the images hidden by the "Complete" gallery filter.
+      CLEANUP_SNR_DAYS: "7"        # Delete images with average SNR below 38 dB after this many days.
+                                   # These are the images hidden by the "≥38 dB" gallery filter.
+      CLEANUP_ALL_DAYS: "30"       # Delete ALL images older than this many days, regardless of quality.
+                                   # Acts as a general retention limit to keep disk usage bounded.
     networks:
       - sdr-network
     volumes:
