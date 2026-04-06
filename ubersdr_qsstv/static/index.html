@@ -175,7 +175,14 @@
         </div>
       </div>
       <div id="detail-content">
-        <button id="detail-close-btn" title="Close">✕ Close</button>
+        <div id="detail-nav">
+          <button id="detail-prev-btn" title="Previous image" disabled>&#8592; Prev</button>
+          <button id="detail-next-btn" title="Next image" disabled>Next &#8594;</button>
+          <label id="detail-slideshow-label" title="Cycle through today's images every 2 seconds">
+            <input type="checkbox" id="detail-slideshow-cb"> Today's Slideshow
+          </label>
+          <button id="detail-close-btn" title="Close">✕ Close</button>
+        </div>
         <!-- Top row: metadata on left, image+SNR bar on right -->
         <div id="detail-top">
           <div id="detail-meta-wrap">

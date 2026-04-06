@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/madpsy/ubersdr_qsstv/master"
-INSTALL_DIR="${HOME}/ubersdr/qsstv"
+INSTALL_DIR="${HOME}/ubersdr/sstv"
 COMPOSE_FILE="docker-compose.yml"
 FORCE_UPDATE="${FORCE_UPDATE:-0}"
 CONFIG_PASS_FILE=".config_pass"

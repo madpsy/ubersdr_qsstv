@@ -480,8 +480,62 @@ header h1 {
   align-items: start;
 }
 
+/* Navigation row: prev/next on the left, slideshow in middle, close on the right */
+#detail-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#detail-slideshow-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  color: #888;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  padding: 0 4px;
+}
+
+#detail-slideshow-label input[type="checkbox"] {
+  accent-color: #6fcf97;
+  cursor: pointer;
+}
+
+/* Highlight label text when slideshow is active */
+#detail-slideshow-label:has(input:checked) {
+  color: #6fcf97;
+}
+
+#detail-prev-btn,
+#detail-next-btn {
+  background: none;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: #a0c4ff;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  transition: border-color 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+#detail-prev-btn:hover:not(:disabled),
+#detail-next-btn:hover:not(:disabled) {
+  border-color: #4a90d9;
+  color: #e0e0e0;
+}
+
+#detail-prev-btn:disabled,
+#detail-next-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
 #detail-close-btn {
-  align-self: flex-end;
+  margin-left: auto;
   background: none;
   border: 1px solid #0f3460;
   border-radius: 6px;

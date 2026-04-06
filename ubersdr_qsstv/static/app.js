@@ -946,8 +946,108 @@ function closeLightbox() {
   document.body.style.overflow = '';
 }
 
+// ---------------------------------------------------------------------------
+// Prev / Next navigation + Today's Slideshow
+// ---------------------------------------------------------------------------
+// Returns the list of visible (non-hidden) gallery record IDs in display order
+// (newest first, matching the DOM order).
+function visibleRecordIDs() {
+  const grid = document.getElementById('gallery-grid');
+  if (!grid) return [];
+  const cards = grid.querySelectorAll('.thumb-card:not([style*="display: none"]):not([style*="display:none"])');
+  return Array.from(cards).map(c => c.dataset.id).filter(Boolean);
+}
+
+// Returns today's date key 'YYYY-MM-DD' in UTC (matches recDateKey()).
+function todayDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Returns the visible record IDs that belong to today (UTC date).
+function todayVisibleRecordIDs() {
+  const today = todayDateKey();
+  return visibleRecordIDs().filter(id => {
+    const rec = allRecords.find(r => r.id === id);
+    return rec && recDateKey(rec) === today;
+  });
+}
+
+// Slideshow state
+let slideshowTimer = null;
+const SLIDESHOW_INTERVAL_MS = 2000;
+
+function stopSlideshow() {
+  if (slideshowTimer) {
+    clearInterval(slideshowTimer);
+    slideshowTimer = null;
+  }
+  const cb = document.getElementById('detail-slideshow-cb');
+  if (cb) cb.checked = false;
+}
+
+function slideshowTick() {
+  const ids = todayVisibleRecordIDs();
+  if (ids.length === 0) return;
+  // If nothing is selected or the current selection isn't in today's list,
+  // start from the newest (first) image.
+  const idx = ids.indexOf(selectedID);
+  if (idx < 0) {
+    selectRecord(ids[0]);
+    return;
+  }
+  // Advance to the next image; wrap around to the newest when we reach the end.
+  const nextIdx = (idx + 1) % ids.length;
+  selectRecord(ids[nextIdx]);
+}
+
+function startSlideshow() {
+  // Show the first image immediately, then tick every 2 s.
+  slideshowTick();
+  slideshowTimer = setInterval(slideshowTick, SLIDESHOW_INTERVAL_MS);
+}
+
+function toggleSlideshow(enabled) {
+  if (enabled) {
+    startSlideshow();
+  } else {
+    stopSlideshow();
+  }
+}
+
+// Enable/disable the prev/next buttons based on the current selection.
+function updateNavButtons() {
+  const prevBtn = document.getElementById('detail-prev-btn');
+  const nextBtn = document.getElementById('detail-next-btn');
+  if (!prevBtn || !nextBtn) return;
+
+  if (!selectedID || selectedID === 'live') {
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    return;
+  }
+
+  const ids = visibleRecordIDs();
+  const idx = ids.indexOf(selectedID);
+  // "Prev" = newer (lower index); "Next" = older (higher index)
+  prevBtn.disabled = idx <= 0;
+  nextBtn.disabled = idx < 0 || idx >= ids.length - 1;
+}
+
+function navigatePrev() {
+  const ids = visibleRecordIDs();
+  const idx = ids.indexOf(selectedID);
+  if (idx > 0) selectRecord(ids[idx - 1]);
+}
+
+function navigateNext() {
+  const ids = visibleRecordIDs();
+  const idx = ids.indexOf(selectedID);
+  if (idx >= 0 && idx < ids.length - 1) selectRecord(ids[idx + 1]);
+}
+
 function closeDetail() {
   selectedID = null;
+  stopSlideshow();
   document.querySelectorAll('.thumb-card').forEach(c => c.classList.remove('selected'));
   const liveCard = document.getElementById('live-gallery-card');
   if (liveCard) liveCard.classList.remove('selected');
@@ -962,6 +1062,7 @@ function closeDetail() {
   // Reset delete button state so it's ready for the next selection
   const delBtn = document.getElementById('detail-delete-btn');
   if (delBtn) { delBtn.disabled = false; delBtn.textContent = '🗑 Delete'; }
+  updateNavButtons();
 }
 
 function deleteRecord(id) {
@@ -1019,6 +1120,10 @@ function _removeRecordLocally(id) {
         selectRecord(nextCard.dataset.id);
       }
     }
+  } else {
+    // The deleted record may have been adjacent to the selected one —
+    // refresh the prev/next button states.
+    updateNavButtons();
   }
 }
 
@@ -1072,6 +1177,7 @@ function selectRecord(id) {
     if (livePanel) livePanel.classList.add('visible');
     // Destroy stale SNR chart so it doesn't hold a stale canvas reference
     if (snrChart) { snrChart.destroy(); snrChart = null; }
+    updateNavButtons();
     return;
   }
 
@@ -1201,6 +1307,9 @@ function selectRecord(id) {
 
   // Origin map
   renderMap(rec);
+
+  // Update prev/next button states for the newly selected record.
+  updateNavButtons();
 }
 
 // ---------------------------------------------------------------------------
@@ -2503,7 +2612,10 @@ function connectRxLive(label) {
     setTimeout(() => {
       // Only clear if we're not already in a new reception.
       if (!rxLiveActive) {
-        updateLiveCard('', currentMode, currentCallsign, currentFreq);
+        currentMode = '';
+        currentCallsign = '';
+        currentFreq = '';
+        updateLiveCard('', '', '', '');
         const card = document.getElementById('live-gallery-card');
         if (card) card.classList.remove('receiving');
         // Remove receiving class from detail panel so idle message shows.
@@ -2512,9 +2624,6 @@ function connectRxLive(label) {
       }
       img.src = '';
       bar.style.width = '0%';
-      currentMode = '';
-      currentCallsign = '';
-      currentFreq = '';
       if (labelEl) labelEl.textContent = '';
     }, 4000);
   });
@@ -2624,6 +2733,16 @@ function loadMoreImages() {
 // Clear the gallery and reload from offset 0 with the current filter params.
 // Called whenever a filter checkbox changes.
 function resetAndReloadGallery() {
+  // Check before resetting allRecords whether the currently-selected record
+  // still passes the new filter.  If not, close the detail panel now so the
+  // user doesn't see a stale image while the gallery reloads.
+  if (selectedID !== null && selectedID !== 'live') {
+    const selectedRec = allRecords.find(r => r.id === selectedID);
+    if (!selectedRec || !recPassesFilter(selectedRec)) {
+      closeDetail();
+    }
+  }
+
   // Reset pagination state.
   allRecords = [];
   galleryOffset = 0;
@@ -2637,11 +2756,6 @@ function resetAndReloadGallery() {
     grid.querySelectorAll('.day-group').forEach(g => g.remove());
   }
   updateGalleryCounts();
-
-  // Close the detail panel if it was showing a now-filtered-out record.
-  if (selectedID !== null && selectedID !== 'live') {
-    closeDetail();
-  }
 
   loadMoreImages();
 }
@@ -3007,6 +3121,18 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     })
     .catch(() => {});
+
+  // Detail navigation buttons
+  const prevBtn = document.getElementById('detail-prev-btn');
+  if (prevBtn) prevBtn.addEventListener('click', navigatePrev);
+  const nextBtn = document.getElementById('detail-next-btn');
+  if (nextBtn) nextBtn.addEventListener('click', navigateNext);
+
+  // Today's Slideshow checkbox
+  const slideshowCb = document.getElementById('detail-slideshow-cb');
+  if (slideshowCb) {
+    slideshowCb.addEventListener('change', () => toggleSlideshow(slideshowCb.checked));
+  }
 
   // Live gallery card click — select the live detail view
   const liveGalleryCard = document.getElementById('live-gallery-card');
