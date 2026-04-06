@@ -124,7 +124,6 @@ docker compose up -d --remove-orphans --force-recreate
 
 echo ""
 echo "Done. ubersdr_qsstv is running."
-echo "  Web gallery: http://ubersdr.local:6091"
 echo "  View logs  : docker compose logs -f  (or ./update.sh)"
 echo "  Stop       : ./stop.sh"
 echo "  Start      : ./start.sh"
@@ -143,8 +142,6 @@ if [[ "${PASS_IS_NEW}" == "1" ]]; then
     echo ""
     echo "  This password protects write actions in the web UI (tune, delete, change URL)."
     echo "  It has been saved to: ${INSTALL_DIR}/${CONFIG_PASS_FILE}"
-    echo ""
-    echo "  Web UI: http://ubersdr.local:6091"
     echo ""
     echo "  To change it, edit UI_PASSWORD in ${INSTALL_DIR}/${COMPOSE_FILE}"
     echo "  and run ./restart.sh  (also update ${CONFIG_PASS_FILE} to match)."
