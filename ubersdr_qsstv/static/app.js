@@ -2612,38 +2612,33 @@ function connectRxLive(label) {
     // Disconnect the bar ResizeObserver — no more redraws needed.
     if (liveBarRO) { liveBarRO.disconnect(); liveBarRO = null; }
 
-    // Reset the live gallery card and detail panel to idle state after a short
-    // delay so the user sees the final frame before it clears.
+    // After a short delay, reset the progress bar and mode/callsign labels but
+    // keep the last received image visible in both the live gallery card and the
+    // detail panel — the image is only cleared when a new reception starts.
     setTimeout(() => {
-      // Only clear if we're not already in a new reception.
+      // Only reset labels/bar if we're not already in a new reception.
       if (!rxLiveActive) {
         currentMode = '';
         currentCallsign = '';
         currentFreq = '';
-        updateLiveCard('', '', '', '');
-        const card = document.getElementById('live-gallery-card');
-        if (card) card.classList.remove('receiving');
-        // Remove receiving class from detail panel so idle message shows.
-        const liveDetailPanel = document.getElementById('rx-live-panel');
-        if (liveDetailPanel) liveDetailPanel.classList.remove('receiving');
+        // Keep the image — only clear the text meta and progress bar.
+        // updateLiveCard with null image arg leaves the existing thumbnail intact.
+        updateLiveCard(null, '', '', '');
+        // Keep the 'receiving' class so the image stays visible (not the idle overlay).
+        // The class is removed only when a new rx_start clears the image.
       }
-      img.src = '';
       bar.style.width = '0%';
       if (labelEl) labelEl.textContent = '';
     }, 4000);
   });
 
   rxLiveES.addEventListener('rx_discarded', () => {
-    // Image was discarded (too short) — reset immediately.
+    // Image was discarded (too short/noise) — reset labels and bar but keep
+    // the last good image visible so the live view doesn't go blank.
     rxLiveActive = false;
     if (liveBarRO) { liveBarRO.disconnect(); liveBarRO = null; }
-    updateLiveCard('', '', '', '');
-    const card = document.getElementById('live-gallery-card');
-    if (card) card.classList.remove('receiving');
-    // Remove receiving class from detail panel so idle message shows.
-    const liveDetailPanel = document.getElementById('rx-live-panel');
-    if (liveDetailPanel) liveDetailPanel.classList.remove('receiving');
-    img.src = '';
+    // Keep the image — only clear text meta and progress bar.
+    updateLiveCard(null, '', '', '');
     bar.style.width = '0%';
     currentMode = '';
     currentCallsign = '';
