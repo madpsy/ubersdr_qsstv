@@ -766,7 +766,9 @@ function buildThumbCard(rec) {
   card.appendChild(meta);
 
   // Clicking anywhere on the card selects the record (shows detail panel).
-  card.addEventListener('click', () => selectRecord(rec.id));
+  // Stop the slideshow so the user's manual selection is not immediately
+  // overridden by the next slideshow tick.
+  card.addEventListener('click', () => { stopSlideshow(); selectRecord(rec.id); });
   return card;
 }
 
@@ -1034,12 +1036,14 @@ function updateNavButtons() {
 }
 
 function navigatePrev() {
+  stopSlideshow();
   const ids = visibleRecordIDs();
   const idx = ids.indexOf(selectedID);
   if (idx > 0) selectRecord(ids[idx - 1]);
 }
 
 function navigateNext() {
+  stopSlideshow();
   const ids = visibleRecordIDs();
   const idx = ids.indexOf(selectedID);
   if (idx >= 0 && idx < ids.length - 1) selectRecord(ids[idx + 1]);
@@ -3135,10 +3139,12 @@ document.addEventListener('DOMContentLoaded', () => {
     slideshowCb.addEventListener('change', () => toggleSlideshow(slideshowCb.checked));
   }
 
-  // Live gallery card click — select the live detail view
+  // Live gallery card click — select the live detail view.
+  // Stop the slideshow so the user's manual selection is not immediately
+  // overridden by the next slideshow tick.
   const liveGalleryCard = document.getElementById('live-gallery-card');
   if (liveGalleryCard) {
-    liveGalleryCard.addEventListener('click', () => selectRecord('live'));
+    liveGalleryCard.addEventListener('click', () => { stopSlideshow(); selectRecord('live'); });
   }
 
   // Detail close button
