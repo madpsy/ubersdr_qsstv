@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-INSTALL_DIR="${HOME}/ubersdr/qsstv"
+INSTALL_DIR="${HOME}/ubersdr/sstv"
 CONFIG_PASS_FILE="${INSTALL_DIR}/.config_pass"
 
 if [[ ! -f "${CONFIG_PASS_FILE}" ]]; then

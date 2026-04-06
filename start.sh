@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-INSTALL_DIR="${HOME}/ubersdr/qsstv"
+INSTALL_DIR="${HOME}/ubersdr/sstv"
 
 cd "${INSTALL_DIR}"
 echo "Starting ubersdr_qsstv..."
