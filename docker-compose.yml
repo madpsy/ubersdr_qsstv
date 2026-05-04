@@ -31,6 +31,12 @@ services:
       - sdr-network
     volumes:
       - ./sstv-images:/data
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: "127.0.0.1:24224"
+        fluentd-async: "true"
+        tag: "sstv"
 
 networks:
   sdr-network:
