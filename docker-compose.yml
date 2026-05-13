@@ -3,6 +3,7 @@ services:
     image: madpsy/ubersdr_qsstv:latest
     container_name: sstv
     restart: unless-stopped
+    cpu_shares: 512
     environment:
       # UberSDR base URL
       UBERSDR_URL: "http://ubersdr:8080"
