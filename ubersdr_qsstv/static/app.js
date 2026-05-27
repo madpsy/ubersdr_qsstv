@@ -3337,18 +3337,42 @@ print('Done —', len(records), 'image(s) checked.')
       if (e.key === 'Escape' && modal.classList.contains('open')) closeModal();
     });
 
-    // Copy buttons
+    // Copy buttons — use Clipboard API where available (HTTPS/localhost),
+    // fall back to execCommand('copy') for plain-HTTP local network access.
+    function copyText(text, btn) {
+      const orig = btn.textContent;
+      const confirm = () => {
+        btn.textContent = '✓';
+        setTimeout(() => { btn.textContent = orig; }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(confirm).catch(() => fallback(text, confirm));
+      } else {
+        fallback(text, confirm);
+      }
+    }
+
+    function fallback(text, onDone) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        onDone();
+      } catch (_) {}
+    }
+
     modal.addEventListener('click', e => {
       const btn = e.target.closest('.api-copy-btn');
       if (!btn) return;
       const targetId = btn.dataset.target;
       const el = document.getElementById(targetId);
       if (!el) return;
-      navigator.clipboard.writeText(el.textContent).then(() => {
-        const orig = btn.textContent;
-        btn.textContent = '✓';
-        setTimeout(() => { btn.textContent = orig; }, 1200);
-      }).catch(() => {});
+      copyText(el.textContent, btn);
     });
   })();
 });
