@@ -3222,4 +3222,133 @@ document.addEventListener('DOMContentLoaded', () => {
   if (freqBtn) {
     freqBtn.addEventListener('click', applyFrequency);
   }
+
+  // ---------------------------------------------------------------------------
+  // API reference modal
+  // ---------------------------------------------------------------------------
+  (function initAPIModal() {
+    const modal    = document.getElementById('api-modal');
+    const closeBtn = document.getElementById('api-modal-close');
+    const openBtn  = document.getElementById('api-btn');
+    if (!modal || !openBtn) return;
+
+    function baseURL() {
+      // Use the current page origin + BASE_PATH so examples work behind a
+      // reverse-proxy sub-path (e.g. /addon/sstv) as well as direct access.
+      return window.location.origin + (BASE_PATH || '');
+    }
+
+    function nowMinus(minutes) {
+      return new Date(Date.now() - minutes * 60 * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
+    }
+
+    function populate() {
+      const b = baseURL();
+
+      // Basic list
+      const listEl = document.getElementById('api-ex-list');
+      if (listEl) listEl.textContent = `GET ${b}/api/images?limit=50&offset=0`;
+
+      // Last 60 min
+      const minEl = document.getElementById('api-ex-60min');
+      if (minEl) minEl.textContent = `GET ${b}/api/images?minutes=60&complete=1&min_snr=38`;
+
+      // Explicit window (last hour as an example)
+      const winEl = document.getElementById('api-ex-window');
+      if (winEl) winEl.textContent = `GET ${b}/api/images?since=${nowMinus(60)}&until=${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}&complete=1`;
+
+      // Single record
+      const singleEl = document.getElementById('api-ex-single');
+      if (singleEl) singleEl.textContent = `GET ${b}/api/images/{id}`;
+
+      // File download — show full constructed URLs using the known base
+      const fileEl = document.getElementById('api-ex-file');
+      if (fileEl) fileEl.textContent = `GET ${b}/images/{record.file}   e.g. ${b}/images/2026-05-27_14-30-00_M1.png`;
+
+      const thumbEl = document.getElementById('api-ex-thumb');
+      if (thumbEl) thumbEl.textContent = `GET ${b}/images/{record.thumb}  e.g. ${b}/images/2026-05-27_14-30-00_M1_thumb.jpg`;
+
+      // curl examples
+      const curlEl = document.getElementById('api-ex-curl');
+      if (curlEl) {
+        curlEl.textContent =
+`# List last 60 minutes of complete images (JSON)
+curl -s "${b}/api/images?minutes=60&complete=1&min_snr=38"
+
+# Explicit time window
+curl -s "${b}/api/images?since=${nowMinus(60)}&until=${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}&complete=1"
+
+# Download a single image file
+curl -O "${b}/images/2026-05-27_14-30-00_M1.png"
+
+# Download a single image file (save with original filename)
+curl -OJ "${b}/images/2026-05-27_14-30-00_M1.png"
+
+# Get a single record by ID
+curl -s "${b}/api/images/{id}"`;
+      }
+
+      // Shell script
+      const scriptEl = document.getElementById('api-ex-script');
+      if (scriptEl) {
+        scriptEl.textContent =
+`#!/bin/sh
+# Download all complete images from the last 60 minutes
+BASE="${b}"
+OUTDIR="./sstv-images"
+mkdir -p "$OUTDIR"
+
+curl -s "$BASE/api/images?minutes=60&complete=1&min_snr=38&limit=200&snr_series=0" | \\
+  python3 -c "
+import json, sys, urllib.request, os
+records = json.load(sys.stdin)
+for r in records:
+    fname = r.get('file','')
+    if not fname: continue
+    url = '$BASE/images/' + fname
+    dest = os.path.join('$OUTDIR', fname)
+    if not os.path.exists(dest):
+        print('Downloading', fname)
+        urllib.request.urlretrieve(url, dest)
+print('Done —', len(records), 'image(s) checked.')
+"`;
+      }
+    }
+
+    function openModal() {
+      populate();
+      modal.classList.add('open');
+    }
+
+    function closeModal() {
+      modal.classList.remove('open');
+    }
+
+    openBtn.addEventListener('click', openModal);
+    closeBtn.addEventListener('click', closeModal);
+
+    // Close on backdrop click
+    modal.addEventListener('click', e => {
+      if (e.target === modal) closeModal();
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && modal.classList.contains('open')) closeModal();
+    });
+
+    // Copy buttons
+    modal.addEventListener('click', e => {
+      const btn = e.target.closest('.api-copy-btn');
+      if (!btn) return;
+      const targetId = btn.dataset.target;
+      const el = document.getElementById(targetId);
+      if (!el) return;
+      navigator.clipboard.writeText(el.textContent).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = '✓';
+        setTimeout(() => { btn.textContent = orig; }, 1200);
+      }).catch(() => {});
+    });
+  })();
 });

@@ -45,6 +45,7 @@
       <span id="freq-status"></span>
     </div>
     <button id="metrics-btn" title="Decode statistics">📊 Decodes</button>
+    <button id="api-btn" title="API reference">⚙ API</button>
     <div id="snr-bar">
       <span id="snr-bar-label">SNR</span>
       <canvas id="live-snr-chart" width="200" height="36"></canvas>
@@ -67,6 +68,108 @@
           <button id="auth-cancel-btn">Cancel</button>
         </div>
         <p id="auth-modal-error" class="auth-error"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- API reference modal -->
+  <div id="api-modal" role="dialog" aria-modal="true" aria-label="API reference">
+    <div id="api-modal-box">
+      <div id="api-modal-header">
+        <span id="api-modal-title">⚙ API Reference</span>
+        <button id="api-modal-close" title="Close (Esc)">✕</button>
+      </div>
+      <div id="api-modal-body">
+        <p class="api-intro">All endpoints are read-only and require no authentication. Timestamps are RFC 3339 (UTC).</p>
+
+        <h3 class="api-section">List images</h3>
+        <div class="api-endpoint">
+          <code id="api-ex-list"></code>
+        </div>
+        <table class="api-params">
+          <thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>limit</code></td><td>50</td><td>Max records to return</td></tr>
+            <tr><td><code>offset</code></td><td>0</td><td>Skip N records (pagination)</td></tr>
+            <tr><td><code>complete=1</code></td><td>off</td><td>Only images with ≥95% lines decoded</td></tr>
+            <tr><td><code>min_snr=N</code></td><td>off</td><td>Only images with avg SNR ≥ N dB</td></tr>
+            <tr><td><code>minutes=N</code></td><td>off</td><td>Last N minutes (mutually exclusive with since/until)</td></tr>
+            <tr><td><code>since=&lt;RFC3339&gt;</code></td><td>off</td><td>Images with rx_end ≥ this time</td></tr>
+            <tr><td><code>until=&lt;RFC3339&gt;</code></td><td>off</td><td>Images with rx_end ≤ this time</td></tr>
+            <tr><td><code>snr_series=0</code></td><td>on</td><td>Omit the per-second SNR time series (saves bandwidth); avg/min/max are always included</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="api-section">Example: last 60 minutes, complete + SNR-filtered</h3>
+        <div class="api-endpoint">
+          <code id="api-ex-60min"></code>
+          <button class="api-copy-btn" data-target="api-ex-60min" title="Copy URL">⎘</button>
+        </div>
+
+        <h3 class="api-section">Example: explicit time window</h3>
+        <div class="api-endpoint">
+          <code id="api-ex-window"></code>
+          <button class="api-copy-btn" data-target="api-ex-window" title="Copy URL">⎘</button>
+        </div>
+
+        <h3 class="api-section">Get single image record</h3>
+        <div class="api-endpoint">
+          <code id="api-ex-single"></code>
+          <button class="api-copy-btn" data-target="api-ex-single" title="Copy URL">⎘</button>
+        </div>
+
+        <h3 class="api-section">Download image file</h3>
+        <p class="api-intro">Each record's <code>file</code> field is a bare filename. Prepend the base URL to download it:</p>
+        <div class="api-endpoint">
+          <code id="api-ex-file"></code>
+          <button class="api-copy-btn" data-target="api-ex-file" title="Copy URL">⎘</button>
+        </div>
+        <div class="api-endpoint" style="margin-top:6px">
+          <code id="api-ex-thumb"></code>
+          <button class="api-copy-btn" data-target="api-ex-thumb" title="Copy URL">⎘</button>
+        </div>
+
+        <h3 class="api-section">curl examples</h3>
+        <div class="api-endpoint api-script">
+          <pre id="api-ex-curl"></pre>
+          <button class="api-copy-btn" data-target="api-ex-curl" title="Copy">⎘</button>
+        </div>
+
+        <h3 class="api-section">Shell script: download last hour's images</h3>
+        <div class="api-endpoint api-script">
+          <pre id="api-ex-script"></pre>
+          <button class="api-copy-btn" data-target="api-ex-script" title="Copy script">⎘</button>
+        </div>
+
+        <h3 class="api-section">Response fields (per record)</h3>
+        <table class="api-params">
+          <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>id</code></td><td>string</td><td>Unique record identifier</td></tr>
+            <tr><td><code>file</code></td><td>string</td><td>Image filename — fetch via <code>/images/{file}</code></td></tr>
+            <tr><td><code>thumb</code></td><td>string</td><td>Thumbnail filename — fetch via <code>/images/{thumb}</code></td></tr>
+            <tr><td><code>sstv_mode</code></td><td>string</td><td>SSTV mode short name (e.g. <code>M1</code>, <code>S2</code>)</td></tr>
+            <tr><td><code>callsign</code></td><td>string</td><td>Decoded callsign (if present in image)</td></tr>
+            <tr><td><code>frequency_hz</code></td><td>int</td><td>Receive frequency in Hz</td></tr>
+            <tr><td><code>audio_mode</code></td><td>string</td><td>Audio mode (e.g. <code>usb</code>)</td></tr>
+            <tr><td><code>rx_start</code></td><td>RFC3339</td><td>Reception start time (UTC)</td></tr>
+            <tr><td><code>rx_end</code></td><td>RFC3339</td><td>Reception end time (UTC)</td></tr>
+            <tr><td><code>snr_avg_db</code></td><td>float</td><td>Average SNR over the full image (dB) — used by the signal quality chart</td></tr>
+            <tr><td><code>snr_min_db</code></td><td>float</td><td>Minimum SNR sample (dB)</td></tr>
+            <tr><td><code>snr_max_db</code></td><td>float</td><td>Maximum SNR sample (dB)</td></tr>
+            <tr><td><code>snr_samples</code></td><td>int</td><td>Number of SNR measurements taken</td></tr>
+            <tr><td><code>snr_series</code></td><td>array</td><td>1-second SNR buckets: <code>[{t: unix_ms, snr_db: float}, …]</code> — used to draw the per-image signal quality chart. Omitted when <code>snr_series=0</code></td></tr>
+            <tr><td><code>image_height</code></td><td>int</td><td>Full frame height in lines</td></tr>
+            <tr><td><code>lines_decoded</code></td><td>int</td><td>Lines actually decoded (partial if signal lost)</td></tr>
+            <tr><td><code>cty</code></td><td>object</td><td>Country/continent/zone lookup from callsign (null if no callsign)</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="api-section">Shell script: download last hour's images</h3>
+        <div class="api-endpoint api-script">
+          <pre id="api-ex-script"></pre>
+          <button class="api-copy-btn" data-target="api-ex-script" title="Copy script">⎘</button>
+        </div>
       </div>
     </div>
   </div>

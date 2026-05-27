@@ -170,7 +170,9 @@ func (s *imageStore) add(rec imageRecord) {
 //   - completeOnly: skip records where lines_decoded < image_height * 0.95
 //     (records with image_height == 0 are always included — old sidecars)
 //   - minSNR > 0:   skip records where snr_avg_db is known and below minSNR
-func (s *imageStore) listFiltered(limit, offset int, completeOnly bool, minSNR float64) []imageRecord {
+//   - since / until: only include records whose rx_end falls within [since, until]
+//     (zero values mean "no bound on that side")
+func (s *imageStore) listFiltered(limit, offset int, completeOnly bool, minSNR float64, since, until time.Time) []imageRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -179,6 +181,14 @@ func (s *imageStore) listFiltered(limit, offset int, completeOnly bool, minSNR f
 
 	for i := range s.records {
 		r := &s.records[i]
+
+		// Apply time-range filters (based on rx_end).
+		if !since.IsZero() && r.RxEnd.Before(since) {
+			continue
+		}
+		if !until.IsZero() && r.RxEnd.After(until) {
+			continue
+		}
 
 		// Apply complete-only filter.
 		if completeOnly && r.ImageHeight > 0 {
@@ -429,7 +439,15 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 		indexTmpl.Execute(w, map[string]string{"BasePath": basePath}) //nolint:errcheck
 	})
 
-	// GET /api/images?limit=N&offset=N[&complete=1][&min_snr=38]
+	// GET /api/images?limit=N&offset=N[&complete=1][&min_snr=38][&since=<ISO8601>][&until=<ISO8601>][&minutes=N][&snr_series=0]
+	//
+	// Time-range parameters (all optional; since/until and minutes are mutually exclusive):
+	//   since=<RFC3339>   — only return images whose rx_end is at or after this time
+	//   until=<RFC3339>   — only return images whose rx_end is at or before this time
+	//   minutes=<N>       — shorthand for since=(now - N minutes); cannot be combined with since/until
+	//
+	// snr_series=0        — omit the snr_series array from each record (saves bandwidth);
+	//                       snr_avg_db / snr_min_db / snr_max_db are always included
 	mux.HandleFunc("/api/images", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -455,10 +473,58 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 				minSNR = f
 			}
 		}
-		records := store.listFiltered(limit, offset, completeOnly, minSNR)
+
+		// Parse optional time-range parameters.
+		hasSinceUntil := q.Get("since") != "" || q.Get("until") != ""
+		hasMinutes := q.Get("minutes") != ""
+		if hasSinceUntil && hasMinutes {
+			http.Error(w, `{"error":"minutes and since/until are mutually exclusive"}`, http.StatusBadRequest)
+			return
+		}
+		var since, until time.Time
+		if hasMinutes {
+			if n, err := strconv.Atoi(q.Get("minutes")); err != nil || n <= 0 {
+				http.Error(w, `{"error":"minutes must be a positive integer"}`, http.StatusBadRequest)
+				return
+			} else {
+				since = time.Now().Add(-time.Duration(n) * time.Minute)
+			}
+		} else {
+			if v := q.Get("since"); v != "" {
+				t, err := time.Parse(time.RFC3339, v)
+				if err != nil {
+					http.Error(w, `{"error":"since must be an RFC3339 timestamp, e.g. 2006-01-02T15:04:05Z"}`, http.StatusBadRequest)
+					return
+				}
+				since = t
+			}
+			if v := q.Get("until"); v != "" {
+				t, err := time.Parse(time.RFC3339, v)
+				if err != nil {
+					http.Error(w, `{"error":"until must be an RFC3339 timestamp, e.g. 2006-01-02T15:04:05Z"}`, http.StatusBadRequest)
+					return
+				}
+				until = t
+			}
+		}
+
+		records := store.listFiltered(limit, offset, completeOnly, minSNR, since, until)
 		if records == nil {
 			records = []imageRecord{}
 		}
+
+		// snr_series=0 — strip the per-second SNR time series from each record
+		// to save bandwidth.  snr_avg_db / snr_min_db / snr_max_db are always kept.
+		// Default is to include the series (snr_series=1 or param absent).
+		if q.Get("snr_series") == "0" {
+			stripped := make([]imageRecord, len(records))
+			for i, r := range records {
+				r.SNRSeries = nil
+				stripped[i] = r
+			}
+			records = stripped
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(records)
 	})

@@ -1263,6 +1263,174 @@ header h1 {
   color: #e0e0e0;
 }
 
+/* ── API button (header, left of SNR bar) ── */
+#api-btn {
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 6px;
+  color: #a0c4ff;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 3px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+#api-btn:hover {
+  background: #1a4a8a;
+  border-color: #4a90d9;
+  color: #e0e0e0;
+}
+
+/* ── API modal ── */
+#api-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.80);
+  align-items: center;
+  justify-content: center;
+}
+
+#api-modal.open {
+  display: flex;
+}
+
+#api-modal-box {
+  background: #16213e;
+  border: 1px solid #1a4a80;
+  border-radius: 10px;
+  width: min(780px, 96vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#api-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #0f3460;
+  padding: 10px 14px;
+  flex-shrink: 0;
+}
+
+#api-modal-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #a0c4ff;
+}
+
+#api-modal-close {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #888;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 2px 7px;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+#api-modal-close:hover {
+  border-color: #eb5757;
+  color: #eb5757;
+}
+
+#api-modal-body {
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+  font-size: 0.82rem;
+  color: #ccc;
+  line-height: 1.5;
+}
+
+.api-intro {
+  margin: 0 0 14px;
+  color: #aaa;
+}
+
+.api-section {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #a0c4ff;
+  margin: 16px 0 6px;
+  border-bottom: 1px solid #1a4a80;
+  padding-bottom: 3px;
+}
+
+.api-endpoint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #0d1b2e;
+  border: 1px solid #1a4a80;
+  border-radius: 6px;
+  padding: 8px 10px;
+  word-break: break-all;
+}
+
+.api-endpoint code,
+.api-endpoint pre {
+  flex: 1;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.78rem;
+  color: #6fcf97;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.api-endpoint.api-script {
+  align-items: flex-start;
+}
+
+.api-params {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  margin-top: 6px;
+}
+
+.api-params th {
+  text-align: left;
+  color: #888;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-bottom: 1px solid #1a4a80;
+}
+
+.api-params td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #0f2040;
+  vertical-align: top;
+}
+
+.api-params td code {
+  font-family: 'Courier New', Courier, monospace;
+  color: #6fcf97;
+  font-size: 0.78rem;
+}
+
+.api-copy-btn {
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 4px;
+  color: #a0c4ff;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 2px 7px;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.api-copy-btn:hover {
+  background: #1a4a8a;
+  border-color: #4a90d9;
+}
+
 /* ── Metrics modal ── */
 #metrics-modal {
   display: none;
