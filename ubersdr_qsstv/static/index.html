@@ -92,7 +92,7 @@
             <tr><td><code>limit</code></td><td>50</td><td>Max records to return</td></tr>
             <tr><td><code>offset</code></td><td>0</td><td>Skip N records (pagination)</td></tr>
             <tr><td><code>complete=1</code></td><td>off</td><td>Only images with ≥95% lines decoded</td></tr>
-            <tr><td><code>min_snr=N</code></td><td>off</td><td>Only images with avg SNR ≥ N dB</td></tr>
+            <tr><td><code>min_snr=N</code></td><td>off</td><td>Only images with avg SNR ≥ N dB (true SNR, see <code>snr_scale</code>; the UI filter uses 3.3)</td></tr>
             <tr><td><code>minutes=N</code></td><td>off</td><td>Last N minutes (mutually exclusive with since/until)</td></tr>
             <tr><td><code>since=&lt;RFC3339&gt;</code></td><td>off</td><td>Images with rx_end ≥ this time</td></tr>
             <tr><td><code>until=&lt;RFC3339&gt;</code></td><td>off</td><td>Images with rx_end ≤ this time</td></tr>
@@ -155,6 +155,7 @@
             <tr><td><code>rx_start</code></td><td>RFC3339</td><td>Reception start time (UTC)</td></tr>
             <tr><td><code>rx_end</code></td><td>RFC3339</td><td>Reception end time (UTC)</td></tr>
             <tr><td><code>snr_avg_db</code></td><td>float</td><td>Average SNR over the full image (dB) — used by the signal quality chart</td></tr>
+            <tr><td><code>snr_scale</code></td><td>string</td><td>Which scale the SNR fields are on. The API always serves <code>"snr"</code> (a true SNR: baseband power − passband noise power). Sidecars written before the audio protocol v4 migration hold <code>"s/n0"</code>, the old baseband − noise <em>density</em> figure, which reads 10·log10(filter bandwidth) higher — about 34.7 dB on SSB; those are converted on the way out</td></tr>
             <tr><td><code>snr_min_db</code></td><td>float</td><td>Minimum SNR sample (dB)</td></tr>
             <tr><td><code>snr_max_db</code></td><td>float</td><td>Maximum SNR sample (dB)</td></tr>
             <tr><td><code>snr_samples</code></td><td>int</td><td>Number of SNR measurements taken</td></tr>
@@ -206,8 +207,8 @@
         <label id="gallery-show-latest-label" title="Always jump to the newest image after a live decode completes">
           <input type="checkbox" id="gallery-show-latest" checked> Latest
         </label>
-        <label id="gallery-snr-filter-label" title="Only show images with average SNR ≥ 38 dB">
-          <input type="checkbox" id="gallery-snr-filter" checked> ≥38 dB
+        <label id="gallery-snr-filter-label" title="Only show images with average SNR ≥ 3.3 dB">
+          <input type="checkbox" id="gallery-snr-filter" checked> ≥3.3 dB
         </label>
       </div>
       <!-- Live card — always the first item in the gallery, outside day-groups -->

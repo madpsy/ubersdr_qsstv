@@ -11,8 +11,10 @@ package main
 //                          Controlled by CLEANUP_PARTIAL_DAYS (default 7).
 //
 //   startSNRCleanup      — removes images whose average SNR is known and below
-//                          38 dB (the same threshold as the "≥38 dB" gallery
-//                          filter in the web UI).
+//                          snrCleanupThreshold (the same threshold as the
+//                          gallery filter in the web UI).  Records are compared
+//                          on the true-SNR scale whichever scale they were
+//                          recorded on; see snr_scale.go.
 //                          Controlled by CLEANUP_SNR_DAYS (default 7).
 //
 //   startAgeCleanup      — removes ALL images regardless of quality once they
@@ -35,8 +37,25 @@ import (
 
 const (
 	cleanupInterval = 5 * time.Minute
-	// snrCleanupThreshold matches the "≥38 dB" gallery filter in the web UI.
-	snrCleanupThreshold = 38.0
+	// snrCleanupThreshold matches the gallery filter in the web UI
+	// (gallerySNRMinDB in static/app.js).
+	//
+	// It is on the true-SNR scale, so records are converted from their own
+	// scale before being compared against it: see snr_scale.go.
+	//
+	// This one deletes the image, its thumbnail and its sidecar, so it is the
+	// number that most has to be right, and it was checked against a live
+	// receiver rather than only derived. Measured: an idle channel's 6-second
+	// mean SNR reaches at most +0.57 dB, while the weakest part of a strong
+	// signal (p05) is about 24 dB and the median about 33. 3.3 dB sits above
+	// every idle reading and an order of magnitude below any real signal, which
+	// is the bias a destructive threshold needs.
+	//
+	// It is also the old 38 dB bar less the 34.7 dB unit correction, so the
+	// pre-migration gallery survives unchanged. Leaving it at 38 after the move
+	// to audio protocol version 4 would have deleted every image this program
+	// received.
+	snrCleanupThreshold = 3.3
 )
 
 // startPartialCleanup runs a ticker every 5 minutes and deletes images that
@@ -99,14 +118,15 @@ func runAgeCleanup(store *imageStore, outputDir string, keepDays int) {
 }
 
 // startSNRCleanup runs a ticker every 5 minutes and deletes images that are
-// older than keepDays and have a known average SNR below 38 dB (matching the
-// "≥38 dB" gallery filter in the web UI).
+// older than keepDays and have a known average SNR below snrCleanupThreshold
+// (matching the gallery filter in the web UI). Each record is converted from
+// its own SNR scale before the comparison; see snr_scale.go.
 // keepDays == 0 disables the worker.
 func startSNRCleanup(store *imageStore, outputDir string, keepDays int) {
 	if keepDays <= 0 {
 		return
 	}
-	log.Printf("cleanup: low-SNR worker started (delete <%.0f dB after %d day(s), check every 5 min)", snrCleanupThreshold, keepDays)
+	log.Printf("cleanup: low-SNR worker started (delete <%.1f dB true SNR after %d day(s), check every 5 min)", snrCleanupThreshold, keepDays)
 	go func() {
 		ticker := time.NewTicker(cleanupInterval)
 		defer ticker.Stop()
@@ -156,7 +176,11 @@ func runSNRCleanup(store *imageStore, outputDir string, keepDays int) {
 		}
 		// Only filter records where SNR is known (non-zero).
 		// Old sidecars without SNR data are left alone.
-		if r.SNRAvgDB != 0 && float64(r.SNRAvgDB) < snrCleanupThreshold {
+		//
+		// snrTrueDB puts a pre-migration record on the same scale as a version
+		// 4 one, so this deletes on measured signal quality rather than on
+		// which protocol version happened to record it.
+		if snr, known := r.snrTrueDB(); known && snr < snrCleanupThreshold {
 			candidates = append(candidates, r)
 		}
 	}
@@ -167,7 +191,12 @@ func runSNRCleanup(store *imageStore, outputDir string, keepDays int) {
 	}
 	log.Printf("cleanup: low-SNR pass — %d candidate(s) older than %d day(s)", len(candidates), keepDays)
 	for _, rec := range candidates {
-		deleteRecordFiles(store, outputDir, rec, fmt.Sprintf("SNR %.1f dB < %.0f dB", rec.SNRAvgDB, snrCleanupThreshold))
+		// Log the converted figure, not the stored one: on a pre-migration
+		// record the stored number is on the other scale and would read as
+		// comfortably above a threshold it in fact failed.
+		snr, _ := rec.snrTrueDB()
+		deleteRecordFiles(store, outputDir, rec,
+			fmt.Sprintf("SNR %.1f dB < %.1f dB", snr, snrCleanupThreshold))
 	}
 }
 

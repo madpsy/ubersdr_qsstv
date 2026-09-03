@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/szpajder/QSSTV/ubersdr_qsstv/internal/pcmv4"
 	"golang.org/x/image/draw"
 )
 
@@ -411,18 +412,25 @@ type headlessEvent struct {
 
 // imageRecord is the companion JSON sidecar written alongside each saved image.
 type imageRecord struct {
-	ID              string           `json:"id"`
-	File            string           `json:"file"`
-	Thumb           string           `json:"thumb,omitempty"`
-	SSTVMode        string           `json:"sstv_mode"`
-	Callsign        string           `json:"callsign,omitempty"`
-	FrequencyHz     int              `json:"frequency_hz"`
-	AudioMode       string           `json:"audio_mode"`
-	RxStart         time.Time        `json:"rx_start"`
-	RxEnd           time.Time        `json:"rx_end"`
-	SNRAvgDB        float32          `json:"snr_avg_db"`
-	SNRMinDB        float32          `json:"snr_min_db"`
-	SNRMaxDB        float32          `json:"snr_max_db"`
+	ID          string    `json:"id"`
+	File        string    `json:"file"`
+	Thumb       string    `json:"thumb,omitempty"`
+	SSTVMode    string    `json:"sstv_mode"`
+	Callsign    string    `json:"callsign,omitempty"`
+	FrequencyHz int       `json:"frequency_hz"`
+	AudioMode   string    `json:"audio_mode"`
+	RxStart     time.Time `json:"rx_start"`
+	RxEnd       time.Time `json:"rx_end"`
+	SNRAvgDB    float32   `json:"snr_avg_db"`
+	SNRMinDB    float32   `json:"snr_min_db"`
+	SNRMaxDB    float32   `json:"snr_max_db"`
+	// SNRScale says which of the two scales the three figures above are on:
+	// snrScaleTrueSNR for anything recorded on audio protocol version 4, or
+	// snrScaleDensity for the pre-migration S/N0 readings, which read
+	// 10·log10(filter bandwidth) higher. See snr_scale.go. Sidecars written
+	// before the migration carry no marker; loadExisting stamps them, so every
+	// record the store serves states its scale.
+	SNRScale        string           `json:"snr_scale,omitempty"`
 	BasebandAvgDBFS float32          `json:"baseband_avg_dbfs"`
 	NoiseAvgDBFS    float32          `json:"noise_avg_dbfs"`
 	SNRSamples      int              `json:"snr_samples"`
@@ -720,6 +728,7 @@ func (t *imageTracker) writeSidecar(ev headlessEvent) {
 		SNRAvgDB:        stats.AvgDB,
 		SNRMinDB:        stats.MinDB,
 		SNRMaxDB:        stats.MaxDB,
+		SNRScale:        snrScaleTrueSNR,
 		BasebandAvgDBFS: stats.BasebandAvg,
 		NoiseAvgDBFS:    stats.NoiseAvg,
 		SNRSamples:      stats.SampleCount,
@@ -897,7 +906,10 @@ func (inst *instance) wsURL() string {
 	q.Set("frequency", fmt.Sprintf("%d", inst.freqHz))
 	q.Set("mode", inst.audioMode)
 	q.Set("format", "pcm-zstd")
-	q.Set("version", "2") // request v2 full-header with basebandDBFS + noiseDBFS
+	// Audio protocol version 4: predictive lossless payload and a
+	// variable-length header, decoded in pcm_decoder.go. The format name is
+	// unchanged -- only the version moved.
+	q.Set("version", fmt.Sprintf("%d", pcmv4.ProtocolVersion))
 	q.Set("user_session_id", inst.sessionID)
 	if inst.password != "" {
 		q.Set("password", inst.password)
@@ -1019,12 +1031,9 @@ func (inst *instance) runOnce(ctx context.Context) (reconnect bool) {
 
 	log.Printf("[%s] connected — freq=%d Hz, mode=%s", inst.label, inst.freqHz, inst.audioMode)
 
-	dec, err := newPCMDecoder()
-	if err != nil {
-		log.Printf("[%s] decoder init: %v", inst.label, err)
-		return false
-	}
-	defer dec.close()
+	// One decoder per connection. It is backward adaptive and stateful, so it
+	// must not outlive this socket: see pcm_decoder.go.
+	dec := newPCMDecoder()
 
 	// Create pipes: audioR → qsstv stdin; eventsW → qsstv fd 3; eventsR → Go reader
 	audioR, audioW, err := os.Pipe()
@@ -1182,7 +1191,7 @@ func (inst *instance) runOnce(ctx context.Context) (reconnect bool) {
 
 		switch msgType {
 		case websocket.BinaryMessage:
-			pkt, err := dec.decode(msg, true /* pcm-zstd */)
+			pkt, err := dec.decode(msg)
 			if err != nil {
 				log.Printf("[%s] decode: %v", inst.label, err)
 				continue

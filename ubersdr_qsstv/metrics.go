@@ -16,13 +16,31 @@ import (
 // ---------------------------------------------------------------------------
 
 type metricRow struct {
-	T            int64   `json:"t"`             // Unix ms of rx_end
+	T            int64   `json:"t"` // Unix ms of rx_end
 	Mode         string  `json:"mode"`
 	FreqHz       int     `json:"freq_hz"`
 	SNRAvgDB     float32 `json:"snr_avg_db"`
 	LinesDecoded int     `json:"lines_decoded"`
 	ImageHeight  int     `json:"image_height"`
 	Complete     bool    `json:"complete"` // lines_decoded >= 95% of image_height (and image_height > 0)
+	// SNRScale states which scale SNRAvgDB is on, exactly as on imageRecord.
+	// Rows appended from now on are snrScaleTrueSNR; rows already in
+	// metrics.jsonl carry no marker and are the pre-migration S/N0 figure.
+	// Unlike a sidecar a row does not record the audio mode, so a legacy row is
+	// corrected with the default SSB bandwidth. See snr_scale.go.
+	SNRScale string `json:"snr_scale,omitempty"`
+}
+
+// snrTrueDB returns the row's SNR on the true-SNR scale, and whether it is
+// known. It is the metricRow counterpart of imageRecord.snrTrueDB.
+func (r metricRow) snrTrueDB() (float64, bool) {
+	if r.SNRAvgDB == 0 {
+		return 0, false
+	}
+	if r.SNRScale == snrScaleTrueSNR {
+		return float64(r.SNRAvgDB), true
+	}
+	return float64(r.SNRAvgDB) - legacySNROffsetDB(""), true
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +156,7 @@ func (ms *metricsStore) append(rec imageRecord) {
 		LinesDecoded: rec.LinesDecoded,
 		ImageHeight:  rec.ImageHeight,
 		Complete:     complete,
+		SNRScale:     rec.SNRScale,
 	}
 
 	ms.mu.Lock()
@@ -206,8 +225,12 @@ func (ms *metricsStore) query(period string) metricsQueryResult {
 		if row.Mode != "" {
 			result.ByMode[row.Mode]++
 		}
-		if row.SNRAvgDB != 0 {
-			snrSum += float64(row.SNRAvgDB)
+		// Average on one scale. Rows written before the audio protocol version
+		// 4 migration hold the S/N0 figure, which is tens of dB higher than a
+		// true SNR; summing the two kinds together would produce a mean that
+		// describes neither.
+		if snr, known := row.snrTrueDB(); known {
+			snrSum += snr
 			snrCount++
 		}
 

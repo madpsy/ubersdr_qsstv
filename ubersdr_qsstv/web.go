@@ -121,6 +121,13 @@ func (s *imageStore) loadExisting() {
 		if _, wasDel := deletedSnap[rec.ID]; wasDel {
 			continue
 		}
+		// A sidecar with no scale marker was written before the audio protocol
+		// version 4 migration, so its SNR is the old S/N0 figure. Stamp it now
+		// rather than leaving the field empty: every record the store holds
+		// then states its own scale, and nothing downstream has to infer one.
+		if rec.SNRScale == "" && rec.SNRAvgDB != 0 {
+			rec.SNRScale = snrScaleDensity
+		}
 		recs = append(recs, rec)
 	}
 
@@ -160,8 +167,8 @@ func (s *imageStore) add(rec imageRecord) {
 	}
 	s.mu.Unlock()
 
-	// Broadcast SSE event
-	data, _ := json.Marshal(rec)
+	// Broadcast SSE event on the same scale the REST API serves.
+	data, _ := json.Marshal(rec.onTrueSNRScale())
 	s.sseHub.broadcast(fmt.Sprintf("event: image\ndata: %s\n\n", data))
 }
 
@@ -169,7 +176,11 @@ func (s *imageStore) add(rec imageRecord) {
 // optional server-side filters:
 //   - completeOnly: skip records where lines_decoded < image_height * 0.95
 //     (records with image_height == 0 are always included — old sidecars)
-//   - minSNR > 0:   skip records where snr_avg_db is known and below minSNR
+//   - minSNR > 0:   skip records where snr_avg_db is known and below minSNR.
+//     minSNR is on the true-SNR scale (snr_scale.go); each record is converted
+//     from its own scale before the comparison, so a pre-migration record and a
+//     version 4 one are judged alike rather than by a number that means
+//     something different for each.
 //   - since / until: only include records whose rx_end falls within [since, until]
 //     (zero values mean "no bound on that side")
 func (s *imageStore) listFiltered(limit, offset int, completeOnly bool, minSNR float64, since, until time.Time) []imageRecord {
@@ -198,8 +209,8 @@ func (s *imageStore) listFiltered(limit, offset int, completeOnly bool, minSNR f
 		}
 
 		// Apply minimum SNR filter (only when SNR is known).
-		if minSNR > 0 && r.SNRAvgDB != 0 {
-			if float64(r.SNRAvgDB) < minSNR {
+		if minSNR > 0 {
+			if snr, known := r.snrTrueDB(); known && snr < minSNR {
 				continue
 			}
 		}
@@ -513,6 +524,15 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 			records = []imageRecord{}
 		}
 
+		// Serve one scale. A pre-migration record's SNR figures are converted to
+		// the true-SNR scale here, and every record then says snr_scale:"snr",
+		// so a client can compare and colour them without having to know the
+		// filter bandwidth each was recorded with. The sidecars keep the
+		// original numbers; see snr_scale.go.
+		for i := range records {
+			records[i] = records[i].onTrueSNRScale()
+		}
+
 		// snr_series=0 — strip the per-second SNR time series from each record
 		// to save bandwidth.  snr_avg_db / snr_min_db / snr_max_db are always kept.
 		// Default is to include the series (snr_series=1 or param absent).
@@ -546,7 +566,9 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(rec)
+			// Same scale as the list endpoint; see snr_scale.go.
+			norm := rec.onTrueSNRScale()
+			json.NewEncoder(w).Encode(&norm)
 
 		case http.MethodDelete:
 			if !requiresAuth(w, r, uiPassword, sessions) {

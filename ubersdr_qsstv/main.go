@@ -77,7 +77,7 @@ func main() {
 	cleanupPartialDays := flag.Int("cleanup-partial-days", envIntOr("CLEANUP_PARTIAL_DAYS", 1),
 		"Delete partial images (< 95% decoded) older than N days; 0 = disabled (env: CLEANUP_PARTIAL_DAYS)")
 	cleanupSNRDays := flag.Int("cleanup-snr-days", envIntOr("CLEANUP_SNR_DAYS", 7),
-		"Delete low-SNR images (< 38 dB avg) older than N days; 0 = disabled (env: CLEANUP_SNR_DAYS)")
+		"Delete low-SNR images (below snrCleanupThreshold true SNR) older than N days; 0 = disabled (env: CLEANUP_SNR_DAYS)")
 	cleanupAllDays := flag.Int("cleanup-all-days", envIntOr("CLEANUP_ALL_DAYS", 30),
 		"Delete ALL images older than N days regardless of quality; 0 = disabled (env: CLEANUP_ALL_DAYS)")
 

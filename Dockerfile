@@ -32,7 +32,7 @@ COPY ubersdr_qsstv/go.mod ubersdr_qsstv/go.sum ./
 RUN go mod download
 
 COPY ubersdr_qsstv/ .
-RUN go build -o /out/ubersdr_qsstv ./...
+RUN go build -o /out/ubersdr_qsstv .
 
 # ---------------------------------------------------------------------------
 # Stage 3: runtime image

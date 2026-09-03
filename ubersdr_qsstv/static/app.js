@@ -239,7 +239,7 @@ let deletedIDs = new Set(); // IDs explicitly deleted this session — guards pr
 let selectedID = null;
 let galleryCompleteOnly = true; // mirrors the "Complete only" checkbox
 let galleryShowLatest   = true; // mirrors the "Show latest" checkbox
-let gallerySNRFilter    = true; // mirrors the "≥38 dB" SNR filter checkbox
+let gallerySNRFilter    = true; // mirrors the GALLERY_SNR_MIN_DB filter checkbox
 
 // Infinite-scroll pagination state
 const GALLERY_PAGE = 30;   // records per page
@@ -263,7 +263,15 @@ let audioMuted = false;      // true = muted (gainNode at 0), false = audible
 let squelchEnabled = false;  // true = squelch active
 let squelchOpen = false;     // true = squelch is currently passing audio (SNR high enough)
 // Timer: squelch opens only after SNR stays ≥ SQUELCH_THRESHOLD for SQUELCH_HOLD_MS
-const SQUELCH_THRESHOLD = 35; // dB — SNR must exceed this to open squelch
+// dB true SNR — SNR must exceed this, for SQUELCH_HOLD_MS, to open squelch.
+//
+// Measured on a live receiver: an idle channel's 6-second mean SNR sits between
+// -0.65 and +0.57 dB, and the weakest part of a strong signal (p05) is about
+// 24 dB. 2 dB clears the idle band with margin while staying far below any real
+// signal, and stays just under the GALLERY_SNR_MIN_DB quality bar so the
+// squelch still opens fractionally before an image is judged keepable — the
+// same ordering the old 35/38 pair had.
+const SQUELCH_THRESHOLD = 2.0;
 const SQUELCH_HOLD_MS   = 1000; // ms SNR must stay above threshold before opening
 let squelchAboveTimer = null;  // setTimeout handle — fires when hold period elapses
 let audioOutputDeviceId = ''; // selected sink device id (Chrome/Edge only)
@@ -285,8 +293,12 @@ let audioStreamGen = 0;
 
 // Live SNR sparkline state
 const LIVE_SNR_MAX_POINTS = 120; // 30 s at 250 ms cadence
-const LIVE_SNR_MIN = 30;
-const LIVE_SNR_MAX = 80;
+// Live SNR chart bounds, in true dB, from measurement rather than from shifting
+// the old clamped-era window: idle runs to about -5 dB at its lowest and a
+// strong signal peaks near 42 dB, so -5..45 holds the whole working range with
+// a little headroom.
+const LIVE_SNR_MIN = -5;
+const LIVE_SNR_MAX = 45;
 let liveSNRChart = null;
 let liveSNRData = []; // [{x: timestamp_ms, y: snr_db}, ...]
 
@@ -344,6 +356,43 @@ function fmtTime(iso) {
   return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
 }
 
+// ---------------------------------------------------------------------------
+// SNR scales
+// ---------------------------------------------------------------------------
+// snr_avg_db is on one of two scales, and each record says which in snr_scale.
+// Records made on audio protocol version 4 ("snr") are a real SNR; records made
+// before that migration ("s/n0", or no marker at all on a sidecar the server
+// has not stamped) are the old S/N0 figure, which reads 10*log10(filter
+// bandwidth) higher -- about 34.7 dB on SSB. Every threshold in this file is
+// authored on the true-SNR scale, so a record is converted before it is
+// compared or coloured. Mirrors snrTrueDB in snr_scale.go.
+const SNR_LEGACY_BANDWIDTH_HZ = {
+  usb: 2950, lsb: 2950, am: 10000, nfm: 12500, fm: 16000, wfm: 220000,
+  cwu: 400, cwl: 400,
+};
+const SNR_LEGACY_DEFAULT_BANDWIDTH_HZ = 2950;
+
+// Minimum average SNR, in true dB, for the gallery filter and the matching
+// server-side cleanup (snrCleanupThreshold in cleanup.go).
+//
+// Measured: an idle channel's 6-second mean SNR reaches at most +0.57 dB, and
+// the weakest part of a strong signal (p05) is about 24 dB. 3.3 sits above the
+// worst idle reading and far below any real signal, which is the bias this
+// number needs — the cleanup worker deletes the image, its thumbnail and its
+// sidecar. It also happens to be the old 38 dB bar less the 34.7 dB unit
+// correction, so it keeps the pre-migration gallery visible unchanged.
+const GALLERY_SNR_MIN_DB = 3.3;
+
+// snrTrue converts a record's average SNR to the true-SNR scale, or returns
+// null when the record has no SNR data.
+function snrTrue(rec) {
+  const v = rec.snr_avg_db;
+  if (v == null || v === 0) return null;
+  if (rec.snr_scale === 'snr') return v;
+  const bw = SNR_LEGACY_BANDWIDTH_HZ[rec.audio_mode] || SNR_LEGACY_DEFAULT_BANDWIDTH_HZ;
+  return v - 10 * Math.log10(bw);
+}
+
 function fmtSNR(v) {
   if (v == null || v === 0) return '—';
   return v.toFixed(1) + ' dB';
@@ -353,9 +402,26 @@ function fmtSNR(v) {
 // Live SNR colour: red at 30 dB → orange at 40 dB → green at 50+ dB
 // Returns a CSS colour string.
 // ---------------------------------------------------------------------------
+// Colour ramp bounds in true dB, measured on a live receiver rather than
+// derived by shifting the pre-migration window. An idle channel reads about
+// 0 dB and a strong signal about 30, peaking near 42; the old [30, 50] window
+// shifted down by 34.7 gave [-4.7, 15.3], which saturated at full green from
+// 15 dB up and hid the entire 15-42 dB range where real signals actually live.
+const SNR_RAMP_MIN_DB = 0;
+const SNR_RAMP_MAX_DB = 35;
+
+// Band colour for a record with no SNR recorded at all. The old value, 40, was
+// the midpoint of the old [30, 50] ramp — a deliberately neutral amber rather
+// than a claim about the signal — so the equivalent is the midpoint of this
+// ramp, not 40 shifted onto it.
+const SNR_RAMP_FALLBACK_DB = (SNR_RAMP_MIN_DB + SNR_RAMP_MAX_DB) / 2;
+
 function snrColor(snrDB) {
-  // Clamp to [30, 50] then map to hue [0°=red, 120°=green]
-  const t = Math.max(0, Math.min(1, (snrDB - 30) / 20));
+  // Clamp to [SNR_RAMP_MIN_DB, SNR_RAMP_MAX_DB] then map to hue
+  // [0°=red, 120°=green]: 12 dB -> 41, 24 -> 82, 30 -> 103, 35 -> 120.
+  // Callers pass a value already converted by snrTrue().
+  const t = Math.max(0, Math.min(1,
+    (snrDB - SNR_RAMP_MIN_DB) / (SNR_RAMP_MAX_DB - SNR_RAMP_MIN_DB)));
   const hue = Math.round(t * 120); // 0 → 120
   return `hsl(${hue}, 100%, 50%)`;
 }
@@ -731,9 +797,12 @@ function recPassesFilter(rec) {
     // Old sidecars without image_height: always show (no data to filter on).
     if (rec.image_height && rec.lines_decoded < rec.image_height * 0.95) return false;
   }
-  // SNR filter — hide images whose average SNR is known and below 38 dB
+  // SNR filter — hide images whose average SNR is known and below the
+  // threshold. Each record is converted from its own scale first, so a
+  // pre-migration image and a version 4 one are judged alike.
   if (gallerySNRFilter) {
-    if (rec.snr_avg_db != null && rec.snr_avg_db < 38) return false;
+    const snr = snrTrue(rec);
+    if (snr != null && snr < GALLERY_SNR_MIN_DB) return false;
   }
   return true;
 }
@@ -751,7 +820,7 @@ function buildThumbCard(rec) {
 
   const meta = document.createElement('div');
   meta.className = 'thumb-meta';
-  const snrStyle = rec.snr_avg_db ? ` style="color:${snrColor(rec.snr_avg_db)}"` : '';
+  const snrStyle = rec.snr_avg_db ? ` style="color:${snrColor(snrTrue(rec))}"` : '';
   // Completeness badge: ✅ complete (≥95%), ❌ partial, nothing if data absent (old sidecar)
   const isComplete = rec.image_height > 0 && rec.lines_decoded >= rec.image_height * 0.95;
   const isPartial  = rec.image_height > 0 && rec.lines_decoded < rec.image_height * 0.95;
@@ -1216,7 +1285,7 @@ function selectRecord(id) {
   // Metadata table
   const meta = document.getElementById('detail-meta');
   // SNR rows get inline colour from snrColor() to match the header signal meter.
-  const snrAvgStyle = rec.snr_avg_db != null ? ` style="color:${snrColor(rec.snr_avg_db)}"` : '';
+  const snrAvgStyle = rec.snr_avg_db != null ? ` style="color:${snrColor(snrTrue(rec))}"` : '';
   const snrMinStyle = rec.snr_min_db != null ? ` style="color:${snrColor(rec.snr_min_db)}"` : '';
   const snrMaxStyle = rec.snr_max_db != null ? ` style="color:${snrColor(rec.snr_max_db)}"` : '';
   // Decode completeness row
@@ -1357,7 +1426,7 @@ function renderSNRChart(rec) {
     ];
 
     // Average SNR used only for the static band colour.
-    const avgSNR   = rec.snr_avg_db != null ? rec.snr_avg_db : 40;
+    const avgSNR   = snrTrue(rec) != null ? snrTrue(rec) : SNR_RAMP_FALLBACK_DB;
     const bandBase = snrColor(avgSNR);
     const bandColor = bandBase.replace('hsl(', 'hsla(').replace(')', ', 0.25)');
     const bandFill  = bandBase.replace('hsl(', 'hsla(').replace(')', ', 0.10)');
@@ -1407,7 +1476,7 @@ function renderSNRChart(rec) {
   } else {
     // ── Fallback: flat band from aggregate stats ────────────────────────────
     // Colour based on average SNR — matches the header signal meter.
-    const avgSNR    = rec.snr_avg_db != null ? rec.snr_avg_db : 40;
+    const avgSNR    = snrTrue(rec) != null ? snrTrue(rec) : SNR_RAMP_FALLBACK_DB;
     const lineColor = snrColor(avgSNR);
     const bandColor = lineColor.replace('hsl(', 'hsla(').replace(')', ', 0.4)');
     const bandFill  = lineColor.replace('hsl(', 'hsla(').replace(')', ', 0.15)');
@@ -2693,7 +2762,7 @@ function galleryFilterParams() {
     offset: galleryOffset,
   });
   if (galleryCompleteOnly) params.set('complete', '1');
-  if (gallerySNRFilter)    params.set('min_snr', '38');
+  if (gallerySNRFilter)    params.set('min_snr', String(GALLERY_SNR_MIN_DB));
   return params.toString();
 }
 
@@ -3064,7 +3133,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // "≥38 dB" SNR filter checkbox
+  // SNR filter checkbox (GALLERY_SNR_MIN_DB)
   const snrFilterCb = document.getElementById('gallery-snr-filter');
   if (snrFilterCb) {
     gallerySNRFilter = snrFilterCb.checked; // true by default (checked in HTML)
@@ -3251,7 +3320,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Last 60 min
       const minEl = document.getElementById('api-ex-60min');
-      if (minEl) minEl.textContent = `GET ${b}/api/images?minutes=60&complete=1&min_snr=38`;
+      if (minEl) minEl.textContent = `GET ${b}/api/images?minutes=60&complete=1&min_snr=3.3`;
 
       // Explicit window (last hour as an example)
       const winEl = document.getElementById('api-ex-window');
@@ -3273,7 +3342,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (curlEl) {
         curlEl.textContent =
 `# List last 60 minutes of complete images (JSON)
-curl -s "${b}/api/images?minutes=60&complete=1&min_snr=38"
+curl -s "${b}/api/images?minutes=60&complete=1&min_snr=3.3"
 
 # Explicit time window
 curl -s "${b}/api/images?since=${nowMinus(60)}&until=${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}&complete=1"
@@ -3298,7 +3367,7 @@ BASE="${b}"
 OUTDIR="./sstv-images"
 mkdir -p "$OUTDIR"
 
-curl -s "$BASE/api/images?minutes=60&complete=1&min_snr=38&limit=200&snr_series=0" | \\
+curl -s "$BASE/api/images?minutes=60&complete=1&min_snr=3.3&limit=200&snr_series=0" | \\
   python3 -c "
 import json, sys, urllib.request, os
 records = json.load(sys.stdin)
