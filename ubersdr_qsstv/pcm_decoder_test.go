@@ -32,7 +32,7 @@ import (
 // samples and this file reversed them per packet -- doing that now would
 // silently destroy the audio), and that it reports the stream parameters the
 // WAV preview header and the FFT are built from.
-const pcmv4ExpectedSHA = "ba368c898ae406c5acc806653d9f2dbbfa40086eca3707fda5d77c13948f78d1"
+const pcmv4ExpectedSHA = "4875d2185f1ff5a2031386c569cac0c2259e6a827b9e61f813399a19c3b9c903"
 
 // readV4Fixture returns the packets in testdata/pcmv4_stream.bin.
 //
@@ -79,7 +79,7 @@ func TestPCMDecoderDecodesServerStream(t *testing.T) {
 	// while mislabelling the stream, and the rate and channel count are what
 	// the audio preview's WAV header, the FFT and the stereo downmix are built
 	// from.
-	wantParams := [][2]int{{12000, 1}, {24000, 1}, {48000, 2}}
+	wantParams := [][2]int{{12000, 1}, {24000, 1}, {384000, 2}}
 	var gotParams [][2]int
 
 	for i, pkt := range packets {

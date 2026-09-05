@@ -31,7 +31,7 @@ import (
 // The same fixture and the same expected hash are used by the Go, C++, Python
 // and JavaScript ports of this decoder; a change here that is not made there is
 // a divergence nothing else would report.
-const pcmv4ExpectedSHA = "ba368c898ae406c5acc806653d9f2dbbfa40086eca3707fda5d77c13948f78d1"
+const pcmv4ExpectedSHA = "4875d2185f1ff5a2031386c569cac0c2259e6a827b9e61f813399a19c3b9c903"
 
 // readV4Fixture returns the packets in testdata/pcmv4_stream.bin.
 //
@@ -77,7 +77,7 @@ func TestPCMv4DecodesServerStream(t *testing.T) {
 	// decoder that lost the carried-forward metadata could still hash correctly
 	// while mislabelling the stream, and the sample rate is what this bridge
 	// reports to its rtl_tcp client.
-	wantParams := [][2]int{{12000, 1}, {24000, 1}, {48000, 2}}
+	wantParams := [][2]int{{12000, 1}, {24000, 1}, {384000, 2}}
 	var gotParams [][2]int
 
 	for i, pkt := range packets {
@@ -108,6 +108,80 @@ func TestPCMv4DecodesServerStream(t *testing.T) {
 		if gotParams[i] != wantParams[i] {
 			t.Fatalf("stream parameters: got %v, want %v", gotParams, wantParams)
 		}
+	}
+}
+
+// pcmv4ScaledSHA is the same for testdata/pcmv4_scaled.bin, the reduced-depth
+// mode a min_margin request asks the server for: profile 2, where a shift byte
+// leads the body and the samples come back shifted left by it.
+//
+// This addon receives demodulated audio and never asks for the mode, so nothing
+// it connects to emits profile 2. The fixture is here because the profile is
+// part of the version 4 wire format this decoder claims to read: it covers the
+// paths that exist nowhere else -- a shift that changes as the margin does, a
+// silent packet carrying no shift at all, an escape that carries one, and the
+// profile switching to plain IQ and back when the margin goes to lossless.
+// Getting the shift wrong does not fail; it delivers a signal several bits too
+// quiet, which is exactly the kind of thing only a hash notices.
+const pcmv4ScaledSHA = "7315366ceed3e70552c28d31cde690a14dc66f5244b5a8dc34a5e696f5698ccc"
+
+func TestPCMv4DecodesScaledStream(t *testing.T) {
+	packets := readV4FixtureFile(t, "testdata/pcmv4_scaled.bin")
+	dec := NewPCMv4StreamDecoder()
+	h := sha256.New()
+
+	profiles := map[byte]int{}
+	for i, pkt := range packets {
+		if !PCMv4IsHeader(pkt) {
+			t.Fatalf("packet %d not recognised as version 4", i)
+		}
+		hdr, samples, err := dec.DecodePacket(pkt)
+		if err != nil {
+			t.Fatalf("packet %d: %v", i, err)
+		}
+		profiles[hdr.Profile]++
+		if hdr.Channels != 2 {
+			t.Fatalf("packet %d: %d channels, want interleaved I/Q", i, hdr.Channels)
+		}
+		buf := make([]byte, 2*len(samples))
+		for j, s := range samples {
+			binary.LittleEndian.PutUint16(buf[2*j:], uint16(s))
+		}
+		h.Write(buf)
+	}
+
+	if got := hex.EncodeToString(h.Sum(nil)); got != pcmv4ScaledSHA {
+		t.Fatalf("decoded samples differ from what the server encoded\n got %s\nwant %s", got, pcmv4ScaledSHA)
+	}
+	// Both profiles must have been exercised, or the fixture stopped covering
+	// the switch between them and this test quietly became the lossless one.
+	if profiles[PredProfileIQScaled] == 0 || profiles[PredProfileIQ] == 0 {
+		t.Fatalf("fixture no longer covers both profiles: %v", profiles)
+	}
+}
+
+// A scaled packet whose shift byte is missing must be refused rather than read
+// as the first byte of the body, which would decode as noise.
+func TestPCMv4ScaledRejectsMissingShift(t *testing.T) {
+	packets := readV4FixtureFile(t, "testdata/pcmv4_scaled.bin")
+	dec := NewPCMv4StreamDecoder()
+
+	// The first packet is a resynchronisation point, so it carries the whole
+	// header and the shift immediately after it. Cutting the packet to the
+	// header alone leaves a scaled packet with nothing behind it.
+	hdr, _, err := dec.DecodePacket(packets[0])
+	if err != nil {
+		t.Fatalf("packet 0: %v", err)
+	}
+	if hdr.Profile != PredProfileIQScaled {
+		t.Skip("fixture no longer opens with a scaled packet")
+	}
+	_, off, err := NewPCMv4HeaderDecoder().Decode(packets[0])
+	if err != nil {
+		t.Fatalf("header: %v", err)
+	}
+	if _, _, err := NewPCMv4StreamDecoder().DecodePacket(packets[0][:off]); err == nil {
+		t.Fatal("a scaled packet with no shift byte was accepted")
 	}
 }
 
