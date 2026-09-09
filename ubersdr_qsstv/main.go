@@ -13,6 +13,23 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
+)
+
+// overviewHub is the global fan-out for the multi-channel rail: it carries the
+// channel_state, rail_thumb and rail_rx_end events.  It is deliberately a
+// second hub rather than a share of store.sseHub — sseHub.broadcast drops on a
+// full 16-deep buffer, so putting the high-rate rail thumbs in the same buffer
+// as the authoritative image/delete/snr events would let a thumb burst evict
+// them on a slow client.  The /api/live handler subscribes to both and
+// multiplexes them into one response, so this adds no browser connection.
+var overviewHub = newSSEHub()
+
+// Rail thumbnail tunables, set from flags/env in main().
+var (
+	railThumbInterval = 2000 * time.Millisecond
+	railThumbWidth    = 160
+	railThumbQuality  = 60
 )
 
 // channelFlag is a repeatable -channel flag value.
@@ -80,8 +97,26 @@ func main() {
 		"Delete low-SNR images (below snrCleanupThreshold true SNR) older than N days; 0 = disabled (env: CLEANUP_SNR_DAYS)")
 	cleanupAllDays := flag.Int("cleanup-all-days", envIntOr("CLEANUP_ALL_DAYS", 30),
 		"Delete ALL images older than N days regardless of quality; 0 = disabled (env: CLEANUP_ALL_DAYS)")
+	railThumbIntervalMs := flag.Int("rail-thumb-interval-ms", envIntOr("RAIL_THUMB_INTERVAL_MS", 2000),
+		"Minimum interval between multi-channel rail thumbnails, per channel (env: RAIL_THUMB_INTERVAL_MS)")
+	railThumbW := flag.Int("rail-thumb-width", envIntOr("RAIL_THUMB_WIDTH", 160),
+		"Width in pixels of multi-channel rail thumbnails (env: RAIL_THUMB_WIDTH)")
+	railThumbQ := flag.Int("rail-thumb-quality", envIntOr("RAIL_THUMB_QUALITY", 60),
+		"JPEG quality of multi-channel rail thumbnails (env: RAIL_THUMB_QUALITY)")
 
 	flag.Parse()
+
+	// Rail thumbnail tunables — clamped to sane values so a bad env var cannot
+	// make the producer spin or emit degenerate images.
+	if *railThumbIntervalMs > 0 {
+		railThumbInterval = time.Duration(*railThumbIntervalMs) * time.Millisecond
+	}
+	if *railThumbW > 0 {
+		railThumbWidth = *railThumbW
+	}
+	if *railThumbQ >= 1 && *railThumbQ <= 100 {
+		railThumbQuality = *railThumbQ
+	}
 
 	// Merge UBERSDR_CHANNELS env var into channels slice (only if no -channel flags given)
 	if envCh := os.Getenv("UBERSDR_CHANNELS"); envCh != "" && len(channels) == 0 {
@@ -110,10 +145,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -ui-password          string   Password for write actions in the web UI (empty = disabled)\n")
 		fmt.Fprintf(os.Stderr, "  -cleanup-partial-days int      Delete partial images older than N days (0=disabled, default 7)\n")
 		fmt.Fprintf(os.Stderr, "  -cleanup-snr-days     int      Delete low-SNR images older than N days (0=disabled, default 7)\n")
-		fmt.Fprintf(os.Stderr, "  -cleanup-all-days     int      Delete ALL images older than N days (0=disabled, default 30)\n\n")
+		fmt.Fprintf(os.Stderr, "  -cleanup-all-days     int      Delete ALL images older than N days (0=disabled, default 30)\n")
+		fmt.Fprintf(os.Stderr, "  -rail-thumb-interval-ms int    Min interval between rail thumbnails per channel (default 2000)\n")
+		fmt.Fprintf(os.Stderr, "  -rail-thumb-width     int      Rail thumbnail width in pixels (default 160)\n")
+		fmt.Fprintf(os.Stderr, "  -rail-thumb-quality   int      Rail thumbnail JPEG quality (default 60)\n\n")
 		fmt.Fprintf(os.Stderr, "Environment variables: UBERSDR_URL, UBERSDR_CHANNELS, OUTPUT_DIR,\n")
 		fmt.Fprintf(os.Stderr, "  UBERSDR_PASS, QSSTV_BIN, CTY_FILE, WEB_PORT, WEB_TLS, RECEIVER_LAT, RECEIVER_LON,\n")
-		fmt.Fprintf(os.Stderr, "  UI_PASSWORD, CLEANUP_PARTIAL_DAYS, CLEANUP_SNR_DAYS, CLEANUP_ALL_DAYS\n\n")
+		fmt.Fprintf(os.Stderr, "  UI_PASSWORD, CLEANUP_PARTIAL_DAYS, CLEANUP_SNR_DAYS, CLEANUP_ALL_DAYS,\n")
+		fmt.Fprintf(os.Stderr, "  RAIL_THUMB_INTERVAL_MS, RAIL_THUMB_WIDTH, RAIL_THUMB_QUALITY\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  ubersdr_qsstv -url http://sdr.example.com:8080 \\\n")
 		fmt.Fprintf(os.Stderr, "                -channel 14230000:usb \\\n")
@@ -151,6 +190,11 @@ func main() {
 		if mode == "" {
 			log.Fatalf("empty mode in -channel %q", ch)
 		}
+		for _, prev := range specs {
+			if prev.freqHz == freqHz && prev.audioMode == mode {
+				log.Fatalf("invalid -channel %q: duplicate channel %d:%s", ch, freqHz, mode)
+			}
+		}
 		specs = append(specs, chanSpec{freqHz: freqHz, audioMode: mode})
 	}
 
@@ -184,7 +228,8 @@ func main() {
 	instances := make([]*instance, len(specs))
 	for i, spec := range specs {
 		inst := newInstance(spec.freqHz, spec.audioMode, *rawURL, *pass, *outputDir, *qsstvBin, eventCh, ms)
-		inst.sseHub = store.sseHub // wire live SNR broadcasts
+		inst.sseHub = store.sseHub     // wire live SNR broadcasts
+		inst.overviewHub = overviewHub // wire multi-channel rail broadcasts
 		instances[i] = inst
 		// Use restart() so the initial loopCancel is set consistently.
 		inst.mu.Lock()

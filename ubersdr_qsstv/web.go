@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -172,6 +173,75 @@ func (s *imageStore) add(rec imageRecord) {
 	s.sseHub.broadcast(fmt.Sprintf("event: image\ndata: %s\n\n", data))
 }
 
+// ---------------------------------------------------------------------------
+// channelFilter — optional "only this radio channel" constraint shared by
+// /api/images and /api/metrics
+// ---------------------------------------------------------------------------
+
+// channelFilter narrows a query to one channel. A channel's stable identity is
+// its instance label, fmt.Sprintf("%d_%s", freqHz, audioMode) — e.g.
+// "14230000_usb" — so a label filter sets both fields and is exact, while the
+// freq convenience filter sets only freqHz and admits every audio mode on that
+// frequency. The zero value admits everything, which is what every request that
+// names neither parameter gets.
+type channelFilter struct {
+	freqHz    int    // 0 = any frequency
+	audioMode string // "" = any audio mode
+}
+
+// matches reports whether a record/row from the given channel passes the filter.
+// Audio modes are compared case-insensitively, matching how they are accepted
+// on the command line. A row that does not know its own audio mode (a legacy
+// metrics.jsonl row, see metricRow.AudioMode) can only pass a filter that does
+// not constrain the mode.
+func (f channelFilter) matches(freqHz int, audioMode string) bool {
+	if f.freqHz != 0 && freqHz != f.freqHz {
+		return false
+	}
+	if f.audioMode != "" && !strings.EqualFold(audioMode, f.audioMode) {
+		return false
+	}
+	return true
+}
+
+// parseChannelFilter reads the optional channel-selection parameters shared by
+// /api/images and /api/metrics:
+//
+//	label=<freqHz>_<audioMode>  — exact channel, e.g. label=14230000_usb
+//	freq=<freqHz>               — every audio mode on that frequency, e.g. freq=14230000
+//
+// The two are mutually exclusive (as minutes and since/until already are):
+// supplying both is a 400 rather than an arbitrary precedence. A malformed
+// value is a 400 as well; a well-formed value that no channel matches is not an
+// error and simply yields an empty result.
+func parseChannelFilter(q url.Values) (channelFilter, error) {
+	label, freq := q.Get("label"), q.Get("freq")
+	if label != "" && freq != "" {
+		return channelFilter{}, errors.New("label and freq are mutually exclusive")
+	}
+	switch {
+	case label != "":
+		// Labels are "<freqHz>_<audioMode>"; the frequency is all digits, so the
+		// first underscore is the separator.
+		freqStr, mode, ok := strings.Cut(label, "_")
+		if !ok || mode == "" {
+			return channelFilter{}, errors.New("label must be <freq_hz>_<audio_mode>, e.g. 14230000_usb")
+		}
+		n, err := strconv.Atoi(freqStr)
+		if err != nil || n <= 0 {
+			return channelFilter{}, errors.New("label must be <freq_hz>_<audio_mode>, e.g. 14230000_usb")
+		}
+		return channelFilter{freqHz: n, audioMode: mode}, nil
+	case freq != "":
+		n, err := strconv.Atoi(freq)
+		if err != nil || n <= 0 {
+			return channelFilter{}, errors.New("freq must be a positive frequency in Hz, e.g. 14230000")
+		}
+		return channelFilter{freqHz: n}, nil
+	}
+	return channelFilter{}, nil
+}
+
 // listFiltered returns up to limit records starting at offset, applying
 // optional server-side filters:
 //   - completeOnly: skip records where lines_decoded < image_height * 0.95
@@ -184,6 +254,14 @@ func (s *imageStore) add(rec imageRecord) {
 //   - since / until: only include records whose rx_end falls within [since, until]
 //     (zero values mean "no bound on that side")
 func (s *imageStore) listFiltered(limit, offset int, completeOnly bool, minSNR float64, since, until time.Time) []imageRecord {
+	return s.listFilteredChannel(limit, offset, completeOnly, minSNR, since, until, channelFilter{})
+}
+
+// listFilteredChannel is listFiltered with one further filter: ch restricts the
+// result to a single radio channel (a zero channelFilter restricts nothing).
+// The channel is judged before the offset is applied, so limit/offset paginate
+// the channel's own records rather than the unfiltered set.
+func (s *imageStore) listFilteredChannel(limit, offset int, completeOnly bool, minSNR float64, since, until time.Time, ch channelFilter) []imageRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -192,6 +270,12 @@ func (s *imageStore) listFiltered(limit, offset int, completeOnly bool, minSNR f
 
 	for i := range s.records {
 		r := &s.records[i]
+
+		// Apply the channel filter. A record carries both halves of the label,
+		// so this is exact.
+		if !ch.matches(r.FrequencyHz, r.AudioMode) {
+			continue
+		}
 
 		// Apply time-range filters (based on rx_end).
 		if !since.IsZero() && r.RxEnd.Before(since) {
@@ -276,6 +360,15 @@ func (h *sseHub) broadcast(msg string) {
 		default:
 		}
 	}
+}
+
+// hasClients reports whether anybody is subscribed.  Used by the rail
+// thumbnail producer to skip all decode/scale work when no browser is
+// watching the multi-channel overview.
+func (h *sseHub) hasClients() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.clients) > 0
 }
 
 // ---------------------------------------------------------------------------
@@ -450,12 +543,16 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 		indexTmpl.Execute(w, map[string]string{"BasePath": basePath}) //nolint:errcheck
 	})
 
-	// GET /api/images?limit=N&offset=N[&complete=1][&min_snr=38][&since=<ISO8601>][&until=<ISO8601>][&minutes=N][&snr_series=0]
+	// GET /api/images?limit=N&offset=N[&complete=1][&min_snr=38][&since=<ISO8601>][&until=<ISO8601>][&minutes=N][&snr_series=0][&label=14230000_usb|&freq=14230000]
 	//
 	// Time-range parameters (all optional; since/until and minutes are mutually exclusive):
 	//   since=<RFC3339>   — only return images whose rx_end is at or after this time
 	//   until=<RFC3339>   — only return images whose rx_end is at or before this time
 	//   minutes=<N>       — shorthand for since=(now - N minutes); cannot be combined with since/until
+	//
+	// Channel parameters (both optional and mutually exclusive; see parseChannelFilter):
+	//   label=<freq>_<mode> — only images from that exact channel, e.g. 14230000_usb
+	//   freq=<freqHz>       — only images on that frequency, whatever the audio mode
 	//
 	// snr_series=0        — omit the snr_series array from each record (saves bandwidth);
 	//                       snr_avg_db / snr_min_db / snr_max_db are always included
@@ -519,7 +616,15 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 			}
 		}
 
-		records := store.listFiltered(limit, offset, completeOnly, minSNR, since, until)
+		// Parse the optional channel filter. A request naming neither parameter
+		// yields the zero filter, i.e. every channel, as before.
+		ch, err := parseChannelFilter(q)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+
+		records := store.listFilteredChannel(limit, offset, completeOnly, minSNR, since, until, ch)
 		if records == nil {
 			records = []imageRecord{}
 		}
@@ -684,11 +789,29 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 		w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering if behind proxy
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
+		// Two hubs, one connection.  store.sseHub carries the low-rate,
+		// authoritative image/delete/snr events; overviewHub carries the
+		// high-rate, droppable rail events.  They are kept separate so a burst
+		// of rail thumbs can never evict an image event from a slow client's
+		// 16-deep buffer (broadcast drops rather than blocks).
 		ch := store.sseHub.subscribe()
 		defer store.sseHub.unsubscribe(ch)
+		railCh := overviewHub.subscribe()
+		defer overviewHub.unsubscribe(railCh)
 
 		// Send an immediate comment so the browser sees the stream is alive
 		fmt.Fprint(w, ": connected\n\n")
+		flusher.Flush()
+
+		// Catch-up: one channel_state per instance so the rail can paint every
+		// row immediately, including any reception already in progress.
+		for _, inst := range instances {
+			payload, err := json.Marshal(inst.channelState())
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: channel_state\ndata: %s\n\n", payload)
+		}
 		flusher.Flush()
 
 		// Send a keepalive comment every 5 s to prevent browser/proxy timeouts
@@ -698,6 +821,9 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 		for {
 			select {
 			case msg := <-ch:
+				fmt.Fprint(w, msg)
+				flusher.Flush()
+			case msg := <-railCh:
 				fmt.Fprint(w, msg)
 				flusher.Flush()
 			case <-ticker.C:
@@ -955,56 +1081,6 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 		}
 	})
 
-	// POST /api/instances/{label}/frequency — retune a running instance
-	// Body: {"freq_hz": 14230000}
-	mux.HandleFunc("/api/instances/", func(w http.ResponseWriter, r *http.Request) {
-		// Only handle .../frequency sub-path
-		path := strings.TrimPrefix(r.URL.Path, "/api/instances/")
-		parts := strings.SplitN(path, "/", 2)
-		if len(parts) != 2 || parts[1] != "frequency" {
-			http.NotFound(w, r)
-			return
-		}
-		label := parts[0]
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if !requiresAuth(w, r, uiPassword, sessions) {
-			return
-		}
-
-		var body struct {
-			FreqHz int `json:"freq_hz"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.FreqHz <= 0 {
-			http.Error(w, "invalid body: expected {\"freq_hz\": <hz>}", http.StatusBadRequest)
-			return
-		}
-
-		var target *instance
-		for _, inst := range instances {
-			if inst.label == label {
-				target = inst
-				break
-			}
-		}
-		if target == nil {
-			http.Error(w, "instance not found", http.StatusNotFound)
-			return
-		}
-
-		log.Printf("[%s] retuning to %d Hz via web UI", target.label, body.FreqHz)
-		target.setFrequency(body.FreqHz)
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":      true,
-			"freq_hz": body.FreqHz,
-			"label":   target.label,
-		})
-	})
-
 	// GET /api/status — instance status + receiver config
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		statuses := make([]map[string]interface{}, len(instances))
@@ -1024,14 +1100,25 @@ func startWebServer(addr string, store *imageStore, instances []*instance, outpu
 		json.NewEncoder(w).Encode(resp)
 	})
 
-	// GET /api/metrics?period=1h|24h|7d|30d — aggregated decode metrics
+	// GET /api/metrics?period=1h|24h|7d|30d[&label=14230000_usb|&freq=14230000]
+	// — aggregated decode metrics.
+	//
+	// label / freq are the same optional, mutually exclusive channel filter
+	// /api/images takes (see parseChannelFilter). Without them every channel is
+	// counted, as before; the by_channel breakdown is always present.
 	mux.HandleFunc("/api/metrics", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		period := r.URL.Query().Get("period")
-		result := ms.query(period)
+		q := r.URL.Query()
+		period := q.Get("period")
+		ch, err := parseChannelFilter(q)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		result := ms.queryFiltered(period, ch)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-cache")
 		json.NewEncoder(w).Encode(result)

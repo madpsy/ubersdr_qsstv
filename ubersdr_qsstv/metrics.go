@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -16,9 +18,15 @@ import (
 // ---------------------------------------------------------------------------
 
 type metricRow struct {
-	T            int64   `json:"t"` // Unix ms of rx_end
-	Mode         string  `json:"mode"`
-	FreqHz       int     `json:"freq_hz"`
+	T      int64  `json:"t"` // Unix ms of rx_end
+	Mode   string `json:"mode"`
+	FreqHz int    `json:"freq_hz"`
+	// AudioMode is the receiver's audio mode ("usb", "lsb", …), not the SSTV
+	// mode in Mode. Together with FreqHz it names the channel the decode came
+	// from — freq_hz alone is not unique, since two instances may share a
+	// frequency with different audio modes. Rows appended from now on carry it;
+	// rows already in metrics.jsonl predate the field and leave it empty.
+	AudioMode    string  `json:"audio_mode,omitempty"`
 	SNRAvgDB     float32 `json:"snr_avg_db"`
 	LinesDecoded int     `json:"lines_decoded"`
 	ImageHeight  int     `json:"image_height"`
@@ -26,9 +34,21 @@ type metricRow struct {
 	// SNRScale states which scale SNRAvgDB is on, exactly as on imageRecord.
 	// Rows appended from now on are snrScaleTrueSNR; rows already in
 	// metrics.jsonl carry no marker and are the pre-migration S/N0 figure.
-	// Unlike a sidecar a row does not record the audio mode, so a legacy row is
-	// corrected with the default SSB bandwidth. See snr_scale.go.
+	// Those legacy rows are also the ones without an AudioMode, so the
+	// correction below uses the default SSB bandwidth. See snr_scale.go.
 	SNRScale string `json:"snr_scale,omitempty"`
+}
+
+// channelLabel is the row's channel identity: the owning instance's label
+// ("14230000_usb") when the audio mode is known, and the bare frequency
+// ("14230000") for a legacy row written before audio_mode was recorded. The two
+// never collide, so a legacy row is bucketed on its own rather than being
+// silently attributed to one of the audio modes on that frequency.
+func (r metricRow) channelLabel() string {
+	if r.AudioMode == "" {
+		return fmt.Sprintf("%d", r.FreqHz)
+	}
+	return fmt.Sprintf("%d_%s", r.FreqHz, r.AudioMode)
 }
 
 // snrTrueDB returns the row's SNR on the true-SNR scale, and whether it is
@@ -54,6 +74,21 @@ type hourBucket struct {
 	Partial  int   `json:"partial"`   // partial decodes
 }
 
+// channelBucket is one entry of the by_channel breakdown: the decodes that came
+// from a single radio channel within the queried period.
+type channelBucket struct {
+	// Label is the bucket key — see metricRow.channelLabel. It is the instance
+	// label ("14230000_usb") for rows that record an audio mode, and the bare
+	// frequency ("14230000") for legacy rows that do not.
+	Label     string  `json:"label"`
+	FreqHz    int     `json:"freq_hz"`
+	AudioMode string  `json:"audio_mode"` // "" for a legacy row's bucket
+	Count     int     `json:"count"`
+	Complete  int     `json:"complete"`
+	Partial   int     `json:"partial"`
+	AvgSNRDB  float32 `json:"avg_snr_db"` // true-SNR scale, 0 when no row in the bucket has a known SNR
+}
+
 type metricsQueryResult struct {
 	Period    string                 `json:"period"`
 	Total     int                    `json:"total"`
@@ -62,6 +97,7 @@ type metricsQueryResult struct {
 	AvgSNRDB  float32                `json:"avg_snr_db"`
 	ByMode    map[string]int         `json:"by_mode"`
 	ByHour    []hourBucket           `json:"by_hour"`
+	ByChannel []channelBucket        `json:"by_channel"`
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +188,7 @@ func (ms *metricsStore) append(rec imageRecord) {
 		T:            rec.RxEnd.UnixMilli(),
 		Mode:         rec.SSTVMode,
 		FreqHz:       rec.FrequencyHz,
+		AudioMode:    rec.AudioMode,
 		SNRAvgDB:     rec.SNRAvgDB,
 		LinesDecoded: rec.LinesDecoded,
 		ImageHeight:  rec.ImageHeight,
@@ -193,8 +230,17 @@ func parsePeriod(period string) (since time.Time, label string) {
 	}
 }
 
-// query returns aggregated metrics for the given period string.
+// query returns aggregated metrics for the given period string, across every
+// channel. It is queryFiltered with no channel constraint.
 func (ms *metricsStore) query(period string) metricsQueryResult {
+	return ms.queryFiltered(period, channelFilter{})
+}
+
+// queryFiltered returns aggregated metrics for the given period string,
+// counting only rows the channel filter admits (a zero filter admits all).
+// Note that a filter naming an audio mode never admits a legacy row, since such
+// a row does not record one; a frequency-only filter does. See channelFilter.
+func (ms *metricsStore) queryFiltered(period string, ch channelFilter) metricsQueryResult {
 	since, label := parsePeriod(period)
 	sinceMs := since.UnixMilli()
 
@@ -209,11 +255,19 @@ func (ms *metricsStore) query(period string) metricsQueryResult {
 	// Bucket map: hour-start-ms → *hourBucket
 	buckets := make(map[int64]*hourBucket)
 
+	// Bucket map: channel label → *channelBucket, plus its running SNR sum.
+	chanBuckets := make(map[string]*channelBucket)
+	chanSNRSum := make(map[string]float64)
+	chanSNRCount := make(map[string]int)
+
 	var snrSum float64
 	var snrCount int
 
 	for _, row := range ms.rows {
 		if row.T < sinceMs {
+			continue
+		}
+		if !ch.matches(row.FreqHz, row.AudioMode) {
 			continue
 		}
 		result.Total++
@@ -229,9 +283,33 @@ func (ms *metricsStore) query(period string) metricsQueryResult {
 		// 4 migration hold the S/N0 figure, which is tens of dB higher than a
 		// true SNR; summing the two kinds together would produce a mean that
 		// describes neither.
-		if snr, known := row.snrTrueDB(); known {
+		snr, snrKnown := row.snrTrueDB()
+		if snrKnown {
 			snrSum += snr
 			snrCount++
+		}
+
+		// Per-channel bucket, keyed as metricRow.channelLabel describes. The
+		// same snrTrueDB accessor as the aggregate above, so a channel mean and
+		// the overall mean are on one scale.
+		cb, ok := chanBuckets[row.channelLabel()]
+		if !ok {
+			cb = &channelBucket{
+				Label:     row.channelLabel(),
+				FreqHz:    row.FreqHz,
+				AudioMode: row.AudioMode,
+			}
+			chanBuckets[cb.Label] = cb
+		}
+		cb.Count++
+		if row.Complete {
+			cb.Complete++
+		} else {
+			cb.Partial++
+		}
+		if snrKnown {
+			chanSNRSum[cb.Label] += snr
+			chanSNRCount[cb.Label]++
 		}
 
 		// Floor to hour
@@ -252,6 +330,22 @@ func (ms *metricsStore) query(period string) metricsQueryResult {
 	if snrCount > 0 {
 		result.AvgSNRDB = float32(math.Round(float64(snrSum)/float64(snrCount)*10) / 10)
 	}
+
+	// by_channel: busiest channel first, ties broken by label so the order is
+	// stable between polls.
+	result.ByChannel = make([]channelBucket, 0, len(chanBuckets))
+	for _, cb := range chanBuckets {
+		if n := chanSNRCount[cb.Label]; n > 0 {
+			cb.AvgSNRDB = float32(math.Round(chanSNRSum[cb.Label]/float64(n)*10) / 10)
+		}
+		result.ByChannel = append(result.ByChannel, *cb)
+	}
+	sort.Slice(result.ByChannel, func(i, j int) bool {
+		if result.ByChannel[i].Count != result.ByChannel[j].Count {
+			return result.ByChannel[i].Count > result.ByChannel[j].Count
+		}
+		return result.ByChannel[i].Label < result.ByChannel[j].Label
+	})
 
 	// Sort buckets by time
 	result.ByHour = make([]hourBucket, 0, len(buckets))

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -465,12 +466,16 @@ type imageTracker struct {
 	state     imgState
 	accum     *snrAccumulator
 	startTime time.Time
+	label     string // owning instance's label, e.g. "14230000_usb"
 	freqHz    int
 	audioMode string
 	outputDir string
 	eventCh   chan<- imageRecord
-	rxLiveHub *sseHub       // fan-out of partial-image SSE events; may be nil
-	metrics   *metricsStore // may be nil
+	rxLiveHub *sseHub // fan-out of partial-image SSE events; may be nil
+	// overviewHub carries the multi-channel rail events (rail_thumb,
+	// rail_rx_end) for every channel at once; may be nil.
+	overviewHub *sseHub
+	metrics     *metricsStore // may be nil
 	// dimensions of the image currently being received (from rx_start)
 	rxWidth  int
 	rxHeight int
@@ -491,18 +496,25 @@ type imageTracker struct {
 	// latestJPEGB64 is the most recent partial JPEG received via rx_line.
 	// Stored so new /api/rx/live subscribers can be caught up immediately.
 	latestJPEGB64 string
+	// railThumbB64 is the most recent downscaled rail thumbnail derived from
+	// latestJPEGB64, cached so a channel_state catch-up can serve it without
+	// re-doing the decode/scale.  lastRailThumb rate-limits production.
+	railThumbB64  string
+	lastRailThumb time.Time
 }
 
-func newImageTracker(freqHz int, audioMode, outputDir string, eventCh chan<- imageRecord, rxLiveHub *sseHub, ms *metricsStore) *imageTracker {
+func newImageTracker(label string, freqHz int, audioMode, outputDir string, eventCh chan<- imageRecord, rxLiveHub, overviewHub *sseHub, ms *metricsStore) *imageTracker {
 	return &imageTracker{
-		state:     imgIdle,
-		accum:     &snrAccumulator{},
-		freqHz:    freqHz,
-		audioMode: audioMode,
-		outputDir: outputDir,
-		eventCh:   eventCh,
-		rxLiveHub: rxLiveHub,
-		metrics:   ms,
+		state:       imgIdle,
+		accum:       &snrAccumulator{},
+		label:       label,
+		freqHz:      freqHz,
+		audioMode:   audioMode,
+		outputDir:   outputDir,
+		eventCh:     eventCh,
+		rxLiveHub:   rxLiveHub,
+		overviewHub: overviewHub,
+		metrics:     ms,
 	}
 }
 
@@ -540,6 +552,10 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 		t.imageTimeMs = ev.ImageTimeMs
 		t.latestJPEGB64 = ""
 		t.sstvMode = ev.SSTVMode
+		// Zeroing lastRailThumb makes the first rx_line of the new image emit a
+		// rail thumbnail immediately rather than waiting out the interval.
+		t.railThumbB64 = ""
+		t.lastRailThumb = time.Time{}
 
 		// Cancel any previous watchdog (shouldn't be active, but be safe).
 		if t.watchdogCancel != nil {
@@ -641,6 +657,27 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 			})
 			t.rxLiveHub.broadcast(fmt.Sprintf("event: rx_line\ndata: %s\n\n", payload))
 		}
+		// Multi-channel rail: a rate-limited, downscaled copy of the same
+		// partial.  Produced ONCE here rather than per subscriber, and skipped
+		// entirely — no decode at all — when nobody is watching the rail.
+		if ev.JPEGB64 != "" && t.overviewHub != nil && t.overviewHub.hasClients() &&
+			time.Since(t.lastRailThumb) >= railThumbInterval {
+			// Stamp before the work, not after: a frame that fails to decode
+			// then costs one interval rather than being retried on every event.
+			t.lastRailThumb = time.Now()
+			if thumb, ok := railThumb(ev.JPEGB64, ev.Line+1, ev.Total); ok {
+				t.railThumbB64 = thumb
+				payload, _ := json.Marshal(map[string]interface{}{
+					"label":     t.label,
+					"jpeg_b64":  thumb,
+					"line":      ev.Line,
+					"total":     ev.Total,
+					"sstv_mode": t.sstvMode,
+					"callsign":  t.pendingCallsign,
+				})
+				t.overviewHub.broadcast(fmt.Sprintf("event: rail_thumb\ndata: %s\n\n", payload))
+			}
+		}
 
 	case "rx_saved":
 		// Cancel the watchdog — the real rx_saved arrived in time.
@@ -650,7 +687,9 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 		}
 		t.latestJPEGB64 = ""
 		t.sstvMode = ""
-		if t.state == imgReceiving {
+		t.railThumbB64 = ""
+		wasReceiving := t.state == imgReceiving
+		if wasReceiving {
 			// If QSSTV's queued callsign signal lost the race with rx_saved
 			// (AutoConnection cross-thread delivery), fall back to the callsign
 			// we stored when rx_callsign arrived earlier in this image.
@@ -687,6 +726,21 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 			})
 			t.rxLiveHub.broadcast(fmt.Sprintf("event: rx_end\ndata: %s\n\n", payload))
 		}
+		// Multi-channel rail: tell the row the reception ended.  The saved
+		// image also arrives as an `image` event on store.sseHub, but the rail
+		// needs to know the row is no longer live even before that lands.
+		if t.overviewHub != nil {
+			imageID := ""
+			if wasReceiving && ev.File != "" {
+				imageID = strings.TrimSuffix(filepath.Base(ev.File), filepath.Ext(ev.File))
+			}
+			payload, _ := json.Marshal(map[string]interface{}{
+				"label":    t.label,
+				"saved":    wasReceiving,
+				"image_id": imageID,
+			})
+			t.overviewHub.broadcast(fmt.Sprintf("event: rail_rx_end\ndata: %s\n\n", payload))
+		}
 
 	case "rx_discarded":
 		// Cancel the watchdog — the image was discarded cleanly.
@@ -698,12 +752,24 @@ func (t *imageTracker) handleEvent(ev headlessEvent) {
 		t.pendingCallsign = ""
 		t.latestJPEGB64 = ""
 		t.sstvMode = ""
+		t.railThumbB64 = ""
 		if t.rxLiveHub != nil {
 			payload, _ := json.Marshal(map[string]interface{}{
 				"event": "rx_discarded",
 				"t":     time.Now().UnixMilli(),
 			})
 			t.rxLiveHub.broadcast(fmt.Sprintf("event: rx_discarded\ndata: %s\n\n", payload))
+		}
+		// Essential for the rail: a discarded image produces no `image` event
+		// at all, so without this the row would stay stuck mid-reception
+		// forever (the rail does not subscribe to the per-instance rxLiveHub).
+		if t.overviewHub != nil {
+			payload, _ := json.Marshal(map[string]interface{}{
+				"label":    t.label,
+				"saved":    false,
+				"image_id": "",
+			})
+			t.overviewHub.broadcast(fmt.Sprintf("event: rail_rx_end\ndata: %s\n\n", payload))
 		}
 	}
 }
@@ -768,6 +834,61 @@ func (t *imageTracker) writeSidecar(ev headlessEvent) {
 	}
 }
 
+// railThumb turns a partial rx_line JPEG (base64) into a small base64 JPEG for
+// the multi-channel rail.
+//
+// The source covers only the `lines` rows decoded so far out of `total`, so it
+// is scaled into the top lines/total fraction of a FIXED railThumbWidth ×
+// 3/4-width box, the rest left black.  Scaling the crop to fill the box instead
+// would make the row jitter as each new strip arrives and would not match the
+// big RX panel; keeping the box constant lets the image fill downward.
+//
+// The default box is 160×120 — identical to generateThumbnail's saved-image
+// thumbnails, so a live rail row and an idle one are pixel-identical in size.
+func railThumb(b64 string, lines, total int) (string, bool) {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return "", false
+	}
+	src, err := jpeg.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return "", false
+	}
+	if src.Bounds().Empty() {
+		return "", false
+	}
+
+	w := railThumbWidth
+	h := w * 3 / 4
+	if w < 1 || h < 1 {
+		return "", false
+	}
+
+	// Height of the decoded portion within the full-frame box.
+	fillH := h
+	if total > 0 && lines > 0 && lines < total {
+		fillH = int(math.Round(float64(h) * float64(lines) / float64(total)))
+	}
+	if fillH < 1 {
+		fillH = 1
+	}
+	if fillH > h {
+		fillH = h
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	// Paint the whole box black first so the not-yet-decoded remainder is
+	// opaque rather than transparent (JPEG has no alpha).
+	draw.Draw(dst, dst.Bounds(), image.Black, image.Point{}, draw.Src)
+	draw.BiLinear.Scale(dst, image.Rect(0, 0, w, fillH), src, src.Bounds(), draw.Src, nil)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: railThumbQuality}); err != nil {
+		return "", false
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), true
+}
+
 // generateThumbnail creates a 160×120 JPEG thumbnail from a PNG image.
 func generateThumbnail(srcPath, dstPath string) {
 	f, err := os.Open(srcPath)
@@ -818,18 +939,20 @@ type instance struct {
 	audioHub  *audioBroadcastHub // fan-out of live PCM to preview listeners
 	fftHub    *fftBroadcastHub   // fan-out of FFT magnitude frames to SSE listeners
 	rxLiveHub *sseHub            // fan-out of rx_line partial-image SSE events
-	metrics   *metricsStore      // may be nil
+	// overviewHub is the shared multi-channel rail hub; may be nil until set
+	// after creation. Carries channel_state / rail_thumb / rail_rx_end.
+	overviewHub *sseHub
+	metrics     *metricsStore // may be nil
 
 	mu            sync.Mutex
 	running       bool
-	stopping      bool
 	startedAt     time.Time
 	reconnections int
 	status        string        // "running" | "reconnecting" | "stopped"
 	receiver      *receiverInfo // populated from /api/description after connect
 
 	// loopCancel cancels the context passed to the current start() goroutine,
-	// allowing setFrequency/setURL to interrupt a sleeping backoff immediately.
+	// allowing setURL to interrupt a sleeping backoff immediately.
 	loopCancel context.CancelFunc
 
 	// Live stream format — set once the first packet arrives, read by /api/audio/preview.
@@ -858,6 +981,71 @@ func (inst *instance) liveRxSnapshot() *liveRxState {
 		return nil
 	}
 	return t.liveSnapshot()
+}
+
+// railState is the tracker-side half of a channel_state event: what the rail
+// row needs to know about the reception currently in progress, if any.
+type railState struct {
+	receiving bool
+	sstvMode  string
+	callsign  string
+	line      int
+	total     int
+	jpegB64   string
+}
+
+// railSnapshot is the rail's sibling of liveRxSnapshot: it reads the current
+// tracker under trackerMu rather than letting callers touch it unlocked.
+// Returns a zero value (receiving == false) when idle.
+func (inst *instance) railSnapshot() railState {
+	inst.trackerMu.RLock()
+	t := inst.tracker
+	inst.trackerMu.RUnlock()
+	if t == nil || t.state != imgReceiving {
+		return railState{}
+	}
+	return railState{
+		receiving: true,
+		sstvMode:  t.sstvMode,
+		callsign:  t.pendingCallsign,
+		line:      t.lastLine,
+		total:     t.rxHeight,
+		jpegB64:   t.railThumbB64,
+	}
+}
+
+// channelState builds one rail channel_state payload: the instance's status
+// fields plus the tracker's reception state and cached rail thumbnail.
+// Takes inst.mu and trackerMu sequentially, never nested, so it cannot deadlock
+// against restart() (which holds inst.mu only).
+func (inst *instance) channelState() map[string]interface{} {
+	snap := inst.statusSnapshot()
+	rail := inst.railSnapshot()
+	return map[string]interface{}{
+		"label":      snap["label"],
+		"freq_hz":    snap["freq_hz"],
+		"audio_mode": snap["audio_mode"],
+		"status":     snap["status"],
+		"receiving":  rail.receiving,
+		"sstv_mode":  rail.sstvMode,
+		"callsign":   rail.callsign,
+		"line":       rail.line,
+		"total":      rail.total,
+		"jpeg_b64":   rail.jpegB64,
+	}
+}
+
+// broadcastChannelState pushes this instance's current channel_state to the
+// rail. Must NOT be called with inst.mu held — channelState() acquires it.
+func (inst *instance) broadcastChannelState() {
+	if inst.overviewHub == nil {
+		return
+	}
+	payload, err := json.Marshal(inst.channelState())
+	if err != nil {
+		return
+	}
+	inst.overviewHub.broadcast(fmt.Sprintf("event: channel_state\ndata: %s\n\n", payload))
 }
 
 func newInstance(freqHz int, audioMode, ubersdrURL, password, outputDir, qsstvPath string, eventCh chan<- imageRecord, ms *metricsStore) *instance {
@@ -1080,7 +1268,7 @@ func (inst *instance) runOnce(ctx context.Context) (reconnect bool) {
 	go func() { qsstvDone <- cmd.Wait() }()
 
 	// Goroutine: read JSON events from eventsR
-	tracker := newImageTracker(inst.freqHz, inst.audioMode, inst.outputDir, inst.eventCh, inst.rxLiveHub, inst.metrics)
+	tracker := newImageTracker(inst.label, inst.freqHz, inst.audioMode, inst.outputDir, inst.eventCh, inst.rxLiveHub, inst.overviewHub, inst.metrics)
 	// Store the tracker on the instance so liveRxSnapshot() can read it.
 	inst.trackerMu.Lock()
 	inst.tracker = tracker
@@ -1142,6 +1330,7 @@ func (inst *instance) runOnce(ctx context.Context) (reconnect bool) {
 	inst.status = "running"
 	inst.startedAt = time.Now()
 	inst.mu.Unlock()
+	inst.broadcastChannelState()
 
 	defer func() {
 		localCancel()
@@ -1309,6 +1498,7 @@ func (inst *instance) start(ctx context.Context) {
 		inst.mu.Lock()
 		inst.status = "reconnecting"
 		inst.mu.Unlock()
+		inst.broadcastChannelState()
 
 		reconnect := inst.runOnce(ctx)
 
@@ -1358,6 +1548,7 @@ func (inst *instance) start(ctx context.Context) {
 		inst.mu.Lock()
 		inst.status = "stopped"
 		inst.mu.Unlock()
+		inst.broadcastChannelState()
 		log.Printf("[%s] stopped", inst.label)
 	}
 }
@@ -1367,7 +1558,9 @@ func (inst *instance) stop() {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	inst.running = false
-	inst.stopping = true
+	if inst.loopCancel != nil {
+		inst.loopCancel()
+	}
 }
 
 // restart cancels the current start() loop and launches a fresh one.
@@ -1401,17 +1594,6 @@ func (inst *instance) restart() {
 	inst.mu.Unlock()
 
 	go inst.start(ctx)
-}
-
-// setFrequency atomically updates the instance frequency (in Hz) and triggers
-// an immediate reconnect by restarting the run loop.  The label is updated to
-// reflect the new frequency so status badges stay consistent.
-func (inst *instance) setFrequency(newFreqHz int) {
-	inst.mu.Lock()
-	inst.freqHz = newFreqHz
-	inst.label = fmt.Sprintf("%d_%s", newFreqHz, inst.audioMode)
-	// restart() releases the lock.
-	inst.restart()
 }
 
 // setURL atomically updates the UberSDR base URL for all future connections and

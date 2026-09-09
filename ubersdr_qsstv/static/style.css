@@ -25,7 +25,7 @@ header h1 {
   color: #e94560;
 }
 
-/* ── UberSDR URL widget — always-visible input, mirrors #freq-tune ── */
+/* ── UberSDR URL widget — always-visible input ── */
 #ubersdr-url-wrap {
   display: flex;
   align-items: center;
@@ -94,11 +94,206 @@ header h1 {
   border-radius: 12px;
   background: #0f3460;
   color: #a0c4ff;
+  /* Badges are the channel selector for the single-channel panels. */
+  cursor: pointer;
+  user-select: none;
+  transition: filter 0.12s ease;
 }
+
+.badge:hover { filter: brightness(1.35); }
+.badge:focus-visible { box-shadow: 0 0 0 2px #a0c4ff; outline: none; }
+
+/* The channel the live RX preview, waterfall and audio panels are following. */
+.badge.focused {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  font-weight: 700;
+  filter: brightness(1.2);
+}
+
+.badge.focused:hover { filter: brightness(1.45); }
 
 .badge.running  { background: #1a4731; color: #6fcf97; }
 .badge.reconnecting { background: #4a3000; color: #f2c94c; }
 .badge.stopped  { background: #3d1a1a; color: #eb5757; }
+
+/* ── Channel rail ──────────────────────────────────────────────────────────
+   A horizontal strip of per-channel rows between the header and the main
+   three-panel layout.  It is `hidden` (see app.js renderRail) whenever there
+   are fewer than two channels, so the single-channel page is untouched.
+   Rows scroll horizontally rather than wrapping: the strip must never grow
+   tall enough to steal height from the gallery/detail panels.            */
+#channel-rail {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  background: #14203a;
+  border-bottom: 1px solid #0f3460;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #0f3460 transparent;
+}
+
+/* The display:flex above would otherwise defeat the `hidden` attribute. */
+#channel-rail[hidden] { display: none; }
+
+#channel-rail::-webkit-scrollbar { height: 6px; }
+#channel-rail::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+
+.rail-row {
+  /* Per-channel accent, set inline from the label hash by app.js. */
+  --rail-accent: #a0c4ff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  width: 236px;
+  padding: 6px 8px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-left: 4px solid var(--rail-accent);
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.rail-row:hover { background: #1b2a4e; }
+.rail-row:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--rail-accent); }
+
+/* The channel the live RX preview, waterfall and audio panels are following. */
+.rail-row.focused {
+  background: #1d2c52;
+  border-color: var(--rail-accent);
+  box-shadow: 0 0 0 2px var(--rail-accent);
+}
+.rail-row.focused .rail-freq { color: var(--rail-accent); }
+
+/* ── Thumbnail ── */
+.rail-thumb-wrap {
+  position: relative;
+  width: 80px;
+  height: 60px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #0d1526;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Idle rows show the last completed image, dimmed; a live partial is full
+   brightness so "this channel is decoding right now" reads at a glance. */
+.rail-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0.45;
+  transition: opacity 0.2s ease;
+}
+.rail-row.receiving .rail-thumb { opacity: 1; }
+
+.rail-thumb-none {
+  font-size: 0.58rem;
+  line-height: 1.2;
+  color: #55688c;
+  text-align: center;
+  padding: 0 4px;
+}
+
+.rail-live-tag {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  display: none;
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #fff;
+  background: rgba(233, 69, 96, 0.9);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.rail-row.receiving .rail-live-tag { display: block; }
+
+/* ── Text / meters column ── */
+.rail-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rail-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.rail-dot { font-size: 0.7rem; line-height: 1; flex-shrink: 0; }
+.rail-dot.running      { color: #6fcf97; }
+.rail-dot.reconnecting { color: #f2c94c; }
+.rail-dot.stopped      { color: #eb5757; }
+
+.rail-freq {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #e0e0e0;
+  white-space: nowrap;
+}
+
+.rail-mode {
+  font-size: 0.62rem;
+  letter-spacing: 0.5px;
+  color: #a0c4ff;
+}
+
+/* Audio is a single PCM stream by design — at most one row can be audible,
+   and this marks which. */
+.rail-audio { margin-left: auto; font-size: 0.72rem; display: none; }
+.rail-row.audible .rail-audio { display: inline; }
+
+.rail-spark { display: block; width: 96px; height: 18px; flex-shrink: 0; }
+
+.rail-snr {
+  margin-left: auto;
+  font-size: 0.6rem;
+  color: #8fa5c8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rail-prog {
+  display: none;
+  height: 3px;
+  border-radius: 2px;
+  background: #0d1526;
+  overflow: hidden;
+}
+.rail-row.receiving .rail-prog { display: block; }
+
+.rail-prog-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--rail-accent);
+  transition: width 0.3s linear;
+}
+
+.rail-meta {
+  font-size: 0.6rem;
+  color: #7f8fa8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-row.receiving .rail-meta { color: var(--rail-accent); }
 
 /* ── Audio output device selector ── */
 #audio-output-select {
@@ -293,6 +488,10 @@ header h1 {
   justify-content: space-between;
   padding: 10px 12px 6px;
   flex-shrink: 0;
+  /* Only ever wraps once the channel chips are shown (2+ channels) — with a
+     single channel the row is unchanged. */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 #gallery-header h2 {
@@ -338,6 +537,46 @@ header h1 {
 #gallery-snr-filter-label input[type="checkbox"] {
   accent-color: #6fcf97;
   cursor: pointer;
+}
+
+/* ── Gallery channel chips ──
+   Their own full-width line under the toggles.  Hidden entirely with a single
+   channel, so a single-channel gallery header is exactly as it was. */
+#gallery-channel-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  flex-basis: 100%;
+  margin-top: 2px;
+}
+
+#gallery-channel-chips[hidden] { display: none; }
+
+.gallery-chip {
+  --chip-accent: #7f8fa6;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  padding: 1px 9px;
+  border-radius: 11px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-left: 3px solid var(--chip-accent);
+  background: #0f3460;
+  color: #9fb3cc;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.gallery-chip:hover { color: #e0e0e0; }
+.gallery-chip:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--chip-accent); }
+
+.gallery-chip.active {
+  color: #fff;
+  border-color: var(--chip-accent);
+  box-shadow: inset 0 0 0 1px var(--chip-accent);
 }
 
 #gallery-grid {
@@ -450,6 +689,33 @@ header h1 {
 .thumb-meta .call { color: #e0e0e0; font-size: 0.78rem; text-align: right; }
 .thumb-meta .snr  { /* colour applied inline via snrColor() */ }
 .thumb-meta .freq { color: #888; }
+
+/* ── Per-card channel accent ──
+   Only visible with 2+ channels (body.multi-channel is set by
+   renderGalleryChannelChips()); at N=1 a card looks exactly as it did.  The
+   colour is the same channelAccent() hash the rail and the chips use, so an
+   image's stripe matches its chip and its rail row. */
+body.multi-channel .thumb-card .thumb-meta {
+  border-left: 3px solid var(--card-accent, transparent);
+}
+
+body.multi-channel .thumb-card .thumb-meta .freq.channel-freq {
+  color: var(--card-accent, #888);
+}
+
+body.multi-channel #detail-meta .value.channel-value {
+  color: var(--card-accent, #e0e0e0);
+}
+
+/* Live card: one card that follows the focused channel (the rail already
+   gives every channel its own live row). */
+#live-card-channel { display: none; }
+body.multi-channel #live-card-channel:not(:empty) { display: inline; }
+body.multi-channel #live-card-channel:not(:empty)::before { content: ' · '; }
+
+body.multi-channel #live-gallery-card .thumb-meta {
+  border-left: 3px solid var(--card-accent, transparent);
+}
 
 /* ── Detail panel ── */
 #detail-panel {
@@ -762,6 +1028,17 @@ header h1 {
   letter-spacing: 0;
 }
 
+/* Which channel the live RX preview belongs to (frequency + mode). */
+#rx-live-channel {
+  color: #7f9bc4;
+  font-weight: 500;
+  font-size: 0.85em;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+#rx-live-channel:not(:empty) { margin-right: 6px; }
+
 #rx-live-progress-row {
   display: flex;
   align-items: center;
@@ -972,62 +1249,6 @@ header h1 {
 .thumb-card img {
   cursor: zoom-in;
 }
-
-/* ── Frequency tune row ── */
-#freq-tune {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-#freq-tune label {
-  font-size: 0.75rem;
-  color: #888;
-  white-space: nowrap;
-}
-
-#freq-input {
-  width: 10ch;
-  background: #0f3460;
-  border: 1px solid #1a4a80;
-  border-radius: 6px;
-  color: #e0e0e0;
-  font-size: 0.85rem;
-  padding: 3px 6px;
-  transition: border-color 0.15s;
-}
-
-#freq-input:focus {
-  border-color: #6fcf97;
-  outline: none;
-}
-
-#freq-set-btn {
-  background: #0f3460;
-  border: 1px solid #1a4a80;
-  border-radius: 6px;
-  color: #6fcf97;
-  cursor: pointer;
-  font-size: 0.85rem;
-  line-height: 1;
-  padding: 3px 8px;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-#freq-set-btn:hover {
-  background: #1a4731;
-  border-color: #6fcf97;
-}
-
-#freq-status {
-  font-size: 0.75rem;
-  min-width: 6ch;
-  white-space: nowrap;
-}
-
-#freq-status.freq-ok  { color: #6fcf97; }
-#freq-status.freq-err { color: #eb5757; }
 
 /* scrollbar */
 ::-webkit-scrollbar { width: 6px; }
@@ -1591,6 +1812,83 @@ header h1 {
   padding: 2px 10px;
   white-space: nowrap;
 }
+
+/* ── Per-channel statistics ── */
+
+/* Channel filter chips across the top of the modal.  Hidden with a single
+   channel, so a single-channel modal is unchanged. */
+#metrics-channel-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+  flex-shrink: 0;
+}
+
+#metrics-channel-filter[hidden] { display: none; }
+
+.metrics-channel-chip {
+  --chip-accent: #7f8fa6;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  padding: 1px 10px;
+  border-radius: 12px;
+  border: 1px solid #1a4a80;
+  border-left: 3px solid var(--chip-accent);
+  background: #0f3460;
+  color: #9fb3cc;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.metrics-channel-chip:hover { color: #e0e0e0; }
+.metrics-channel-chip:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--chip-accent); }
+
+.metrics-channel-chip.active {
+  color: #fff;
+  border-color: var(--chip-accent);
+  box-shadow: inset 0 0 0 1px var(--chip-accent);
+}
+
+/* by_channel breakdown — one row per channel, server-sorted. */
+#metrics-by-channel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid #0f3460;
+  flex-shrink: 0;
+}
+
+#metrics-by-channel[hidden] { display: none; }
+
+.metrics-section-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #888;
+  margin-bottom: 2px;
+}
+
+.metrics-channel-row {
+  --chip-accent: #7f8fa6;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  border-left: 3px solid var(--chip-accent);
+  background: #0f3460;
+  border-radius: 0 4px 4px 0;
+}
+
+.metrics-channel-name   { color: #e0e0e0; flex: 1; min-width: 0; }
+.metrics-channel-counts { color: #9fb3cc; white-space: nowrap; }
+.metrics-channel-snr    { color: #888; white-space: nowrap; min-width: 52px; text-align: right; }
+
+/* Rows decoded before per-channel attribution — no audio mode was recorded. */
+.metrics-channel-row.legacy .metrics-channel-name { color: #8a97a8; font-style: italic; }
 
 /* ── Auth modal ─────────────────────────────────────────────────────────── */
 #auth-modal {

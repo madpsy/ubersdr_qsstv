@@ -4,6 +4,7 @@
      • Fixed to right edge, vertically centred
      • Shows the latest decoded SSTV image
      • Polls /addon/sstv/api/images?limit=1 every 60 s
+     • Set CHANNEL below to pin the widget to one frequency
      • Only re-fetches the image when the record ID changes
      • Drag widget to reposition
      ═══════════════════════════════════════════════════════════ -->
@@ -219,7 +220,15 @@
 (function () {
   'use strict';
 
-  const API_URL   = '/addon/sstv/api/images?limit=1&snr_series=0&complete=1&min_snr=38';
+  // Optional: pin this widget to a single channel.  Leave '' to show the latest
+  // image from any channel.  Accepts either an exact channel label
+  // ('14230000_usb') or a bare frequency in Hz ('14230000', any mode).
+  const CHANNEL   = '';
+
+  const API_URL   = '/addon/sstv/api/images?limit=1&snr_series=0&complete=1&min_snr=38'
+                  + (CHANNEL
+                      ? (CHANNEL.includes('_') ? '&label=' : '&freq=') + encodeURIComponent(CHANNEL)
+                      : '');
   const IMG_BASE  = '/addon/sstv/images/';
   const POLL_MS   = 60_000; // 1 minute
 

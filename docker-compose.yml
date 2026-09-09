@@ -7,7 +7,10 @@ services:
     environment:
       # UberSDR base URL
       UBERSDR_URL: "http://ubersdr:8080"
-      # Comma-separated freq:mode pairs, e.g. 14230000:usb,21335000:usb
+      # Comma-separated freq:mode pairs.  Each pair is decoded concurrently by its
+      # own decoder process, and the web UI shows a live channel rail when two or
+      # more are configured, e.g. "14230000:usb,21335000:usb,7171000:lsb".
+      # Note each channel opens its own audio session on the UberSDR receiver.
       UBERSDR_CHANNELS: "14230000:usb"
       # Uncomment and set as needed:
       # UBERSDR_PASS: ""
@@ -17,8 +20,15 @@ services:
       # RECEIVER_LAT: "0.0"
       # RECEIVER_LON: "0.0"
       # CTY_FILE: ""
-      # UI_PASSWORD: ""   # Set a password to enable write actions (tune, delete, change URL).
+      # UI_PASSWORD: ""   # Set a password to enable write actions (delete, change URL).
                           # Leave empty (default) to disable all write actions.
+      #
+      # Multi-channel rail thumbnails.  Only produced while a browser is actually
+      # watching, and skipped entirely when nobody is.  Lower the interval for a
+      # smoother rail, raise it to cut bandwidth on a busy receiver.
+      # RAIL_THUMB_INTERVAL_MS: "2000"   # Min ms between thumbnails, per channel
+      # RAIL_THUMB_WIDTH: "160"          # Thumbnail width in pixels
+      # RAIL_THUMB_QUALITY: "60"         # Thumbnail JPEG quality (1-100)
       #
       # Automatic cleanup — runs every 5 minutes.  Set any value to 0 to disable that job.
       CLEANUP_PARTIAL_DAYS: "1"    # Delete images where the signal was lost mid-frame

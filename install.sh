@@ -140,7 +140,7 @@ if [[ "${PASS_IS_NEW}" == "1" ]]; then
     echo ""
     echo "  ${CONFIG_PASS}"
     echo ""
-    echo "  This password protects write actions in the web UI (tune, delete, change URL)."
+    echo "  This password protects write actions in the web UI (delete, change URL)."
     echo "  It has been saved to: ${INSTALL_DIR}/${CONFIG_PASS_FILE}"
     echo ""
     echo "  To change it, edit UI_PASSWORD in ${INSTALL_DIR}/${COMPOSE_FILE}"

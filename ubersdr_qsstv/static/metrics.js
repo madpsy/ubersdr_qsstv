@@ -10,6 +10,35 @@ const _metricsBasePath = (typeof BASE_PATH === 'string') ? BASE_PATH : '';
 // ---------------------------------------------------------------------------
 let metricsChart = null;
 let metricsCurrentPeriod = '24h';
+// '' = every channel.  Otherwise an instance label, passed straight through to
+// /api/metrics as `label=` (mutually exclusive with `freq`, which the UI never
+// sends).  Deliberately NOT persisted: the modal is a transient view, and it
+// always opens showing the whole picture.
+let metricsChannelFilter = '';
+let metricsChipSig = '';
+
+// The channel list and the accent hash both come from app.js, which is loaded
+// first and shares this window scope — one hash, so a channel is the same
+// colour in the rail, the gallery and here.
+function metricsChannels() {
+  return (typeof railChannels !== 'undefined' && railChannels) ? [...railChannels.values()] : [];
+}
+
+function metricsAccent(label) {
+  return (typeof channelAccent === 'function') ? channelAccent(label) : '#a0c4ff';
+}
+
+// Render one by_channel entry's name.  Rows written before per-channel
+// attribution have no audio mode at all: the server reports those with `label`
+// set to the bare frequency and an empty `audio_mode`.  Showing a naked
+// "14230000" or a blank mode would be meaningless, so they are named as the
+// frequency plus an explicit "pre-upgrade" qualifier.
+function metricsChannelName(c) {
+  const hz   = (c && c.freq_hz != null) ? c.freq_hz : null;
+  const freq = hz != null ? (hz / 1e6).toFixed(3) + ' MHz' : (c && c.label) || '—';
+  const mode = (c && c.audio_mode || '').toUpperCase();
+  return mode ? freq + ' ' + mode : freq + ' · pre-upgrade';
+}
 
 // ---------------------------------------------------------------------------
 // Open / close
@@ -19,6 +48,12 @@ function openMetricsModal() {
   if (!modal) return;
   modal.classList.add('open');
   document.body.style.overflow = 'hidden';
+  // The channel set can change between opens (a restart with a new config), so
+  // rebuild the chips — and drop a filter naming a channel that is now gone.
+  if (metricsChannelFilter && !metricsChannels().some(c => c.label === metricsChannelFilter)) {
+    metricsChannelFilter = '';
+  }
+  renderMetricsChannelChips();
   fetchMetrics(metricsCurrentPeriod);
 }
 
@@ -46,9 +81,18 @@ function fetchMetrics(period) {
     if (el) el.textContent = '…';
   });
 
-  fetch(_metricsBasePath + '/api/metrics?period=' + encodeURIComponent(period))
+  // label= narrows the whole modal — summary, chart and breakdowns — to one
+  // channel.  It is mutually exclusive with freq=, which the UI never sends.
+  const chanParam = metricsChannelFilter
+    ? '&label=' + encodeURIComponent(metricsChannelFilter) : '';
+
+  fetch(_metricsBasePath + '/api/metrics?period=' + encodeURIComponent(period) + chanParam)
     .then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) {
+        const e = new Error('HTTP ' + r.status);
+        e.status = r.status;
+        throw e;
+      }
       return r.json();
     })
     .then(data => renderMetrics(data))
@@ -58,7 +102,87 @@ function fetchMetrics(period) {
         const el = document.getElementById(id);
         if (el) el.textContent = '—';
       });
+      // A rejected channel filter must not leave the modal permanently stuck
+      // on dashes — fall back to every channel and retry once.
+      if (err && err.status === 400 && metricsChannelFilter) {
+        metricsChannelFilter = '';
+        renderMetricsChannelChips();
+        fetchMetrics(period);
+      }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Channel filter chips
+// ---------------------------------------------------------------------------
+function setMetricsChannelFilter(label) {
+  const next = label || '';
+  if (next === metricsChannelFilter) return;
+  metricsChannelFilter = next;
+  updateMetricsChipState();
+  fetchMetrics(metricsCurrentPeriod);
+}
+
+function updateMetricsChipState() {
+  const wrap = document.getElementById('metrics-channel-filter');
+  if (!wrap) return;
+  wrap.querySelectorAll('.metrics-channel-chip').forEach(chip => {
+    const on = (chip.dataset.label || '') === metricsChannelFilter;
+    chip.classList.toggle('active', on);
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+function buildMetricsChip(label, text, accent) {
+  const chip = document.createElement('span');
+  chip.className = 'metrics-channel-chip';
+  chip.dataset.label = label;
+  chip.textContent = text;
+  chip.setAttribute('role', 'button');
+  chip.setAttribute('tabindex', '0');
+  chip.setAttribute('aria-pressed', 'false');
+  chip.title = label ? 'Show statistics for this channel only'
+                     : 'Show statistics for every channel';
+  if (accent && chip.style && chip.style.setProperty) {
+    chip.style.setProperty('--chip-accent', accent);
+  }
+  chip.addEventListener('click', () => setMetricsChannelFilter(label));
+  chip.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+      ev.preventDefault();
+      setMetricsChannelFilter(label);
+    }
+  });
+  return chip;
+}
+
+function renderMetricsChannelChips() {
+  const wrap = document.getElementById('metrics-channel-filter');
+  if (!wrap) return;
+  const chans = metricsChannels();
+
+  // One channel: the filter would be a no-op, so it stays out of the way —
+  // the same rule the rail and the gallery chips follow.
+  if (chans.length < 2) {
+    wrap.hidden = true;
+    wrap.innerHTML = '';
+    metricsChipSig = '';
+    return;
+  }
+
+  wrap.hidden = false;
+  const sig = chans.map(c => c.label).join('|');
+  if (sig === metricsChipSig) {
+    updateMetricsChipState();
+    return;
+  }
+  metricsChipSig = sig;
+  wrap.innerHTML = '';
+  wrap.appendChild(buildMetricsChip('', 'All channels', ''));
+  for (const ch of chans) {
+    wrap.appendChild(buildMetricsChip(ch.label, metricsChannelName(ch), metricsAccent(ch.label)));
+  }
+  updateMetricsChipState();
 }
 
 function renderMetrics(data) {
@@ -99,8 +223,67 @@ function renderMetrics(data) {
     }
   }
 
+  // By-channel breakdown
+  renderMetricsByChannel(data);
+
   // Chart
   renderMetricsChart(data);
+}
+
+// `by_channel` is a SORTED ARRAY (count desc, then label asc), not a map, so it
+// is rendered in the order the server gives it.
+function renderMetricsByChannel(data) {
+  const el = document.getElementById('metrics-by-channel');
+  if (!el) return;
+  const rows = Array.isArray(data.by_channel) ? data.by_channel : [];
+
+  // With a single entry the breakdown just restates the summary above it.
+  if (rows.length < 2) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'metrics-section-label';
+  head.textContent = 'By channel';
+  el.appendChild(head);
+
+  for (const c of rows) {
+    const legacy = !(c.audio_mode || '');
+    const row = document.createElement('div');
+    row.className = 'metrics-channel-row' + (legacy ? ' legacy' : '');
+    if (row.style && row.style.setProperty) {
+      row.style.setProperty('--chip-accent', metricsAccent(c.label));
+    }
+
+    const name = document.createElement('span');
+    name.className = 'metrics-channel-name';
+    name.textContent = metricsChannelName(c);
+    if (legacy) {
+      name.title = 'Images decoded before per-channel attribution — the audio mode was not recorded';
+    }
+
+    const counts = document.createElement('span');
+    counts.className = 'metrics-channel-counts';
+    counts.textContent = `${c.count != null ? c.count : 0} · ✅ ${c.complete != null ? c.complete : 0} · ❌ ${c.partial != null ? c.partial : 0}`;
+
+    const snr = document.createElement('span');
+    snr.className = 'metrics-channel-snr';
+    if (c.avg_snr_db) {
+      snr.textContent = c.avg_snr_db.toFixed(1) + ' dB';
+      snr.style.color = snrColor(c.avg_snr_db);
+    } else {
+      snr.textContent = '—';
+    }
+
+    row.appendChild(name);
+    row.appendChild(counts);
+    row.appendChild(snr);
+    el.appendChild(row);
+  }
 }
 
 function renderMetricsChart(data) {

@@ -46,7 +46,7 @@ All configuration is via environment variables in `docker-compose.yml`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `UBERSDR_URL` | `http://ubersdr:8080` | UberSDR base URL |
-| `UBERSDR_CHANNELS` | `14230000:usb` | Comma-separated `freq:mode` pairs, e.g. `14230000:usb,21335000:usb` |
+| `UBERSDR_CHANNELS` | `14230000:usb` | Comma-separated `freq:mode` pairs, e.g. `14230000:usb,21335000:usb`. Each is decoded concurrently — see [Multiple channels](#multiple-channels) |
 | `UBERSDR_PASS` | _(empty)_ | UberSDR bypass password |
 | `OUTPUT_DIR` | `/data` | Output directory for images inside the container |
 | `WEB_PORT` | `6091` | Web gallery port (set to `0` to disable) |
@@ -54,10 +54,54 @@ All configuration is via environment variables in `docker-compose.yml`:
 | `RECEIVER_LAT` | `0.0` | Receiver latitude for the origin map |
 | `RECEIVER_LON` | `0.0` | Receiver longitude for the origin map |
 | `CTY_FILE` | _(embedded)_ | Path to a custom `CTY.DAT` for callsign geo-lookup |
+| `UI_PASSWORD` | _(empty)_ | Password for write actions in the web UI; empty disables them |
+| `CLEANUP_PARTIAL_DAYS` | `1` | Delete images with <95% of lines decoded after N days; `0` disables |
+| `CLEANUP_SNR_DAYS` | `7` | Delete low-SNR images after N days; `0` disables |
+| `CLEANUP_ALL_DAYS` | `30` | Delete all images after N days regardless of quality; `0` disables |
+| `RAIL_THUMB_INTERVAL_MS` | `2000` | Min interval between channel-rail thumbnails, per channel |
+| `RAIL_THUMB_WIDTH` | `160` | Channel-rail thumbnail width in pixels |
+| `RAIL_THUMB_QUALITY` | `60` | Channel-rail thumbnail JPEG quality (1–100) |
 
 ### Supported modes
 
 Any mode supported by UberSDR's audio demodulator: `usb`, `lsb`, `am`, `fm`, etc.
+
+---
+
+## Multiple channels
+
+List as many `freq:mode` pairs as you want and each is received and decoded
+concurrently, by its own decoder process:
+
+```yaml
+UBERSDR_CHANNELS: "14230000:usb,21335000:usb,7171000:lsb"
+```
+
+Frequencies are fixed at startup — change them by editing the config and running
+`./restart.sh`. Duplicate `freq:mode` pairs are rejected at startup, since a
+channel is identified by that pair.
+
+With two or more channels the web UI shows a **channel rail**: one row per
+channel with a live thumbnail of whatever it is decoding right now, signal
+quality, and reception progress. Click a row to focus that channel — the live
+preview, waterfall and audio follow your selection. Decoded images from every
+channel land in the same gallery, tagged with the frequency they came from.
+
+Audio is single-select: you can only listen to one channel at a time, and the
+rail shows which one is audible.
+
+### What each channel costs
+
+Every channel is a separate audio session on the UberSDR receiver plus its own
+decoder process, so a handful of channels is comfortable on typical hardware.
+The practical ceiling is usually upstream rather than local: a public UberSDR
+may cap concurrent sessions per client, in which case the extra channels will
+report a connection failure with the receiver's reason. `UBERSDR_PASS` exists to
+bypass that where you are permitted to.
+
+Rail thumbnails are generated only while a browser is actually watching, and are
+skipped entirely when nobody is — an unattended receiver does no thumbnail work
+at all.
 
 ---
 

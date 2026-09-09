@@ -240,12 +240,18 @@ let selectedID = null;
 let galleryCompleteOnly = true; // mirrors the "Complete only" checkbox
 let galleryShowLatest   = true; // mirrors the "Show latest" checkbox
 let gallerySNRFilter    = true; // mirrors the GALLERY_SNR_MIN_DB filter checkbox
+let galleryChannelFilter = '';  // '' = every channel; otherwise one instance label
 
 // Infinite-scroll pagination state
 const GALLERY_PAGE = 30;   // records per page
 let galleryOffset   = 0;   // next offset to fetch
 let galleryLoading  = false;
 let galleryExhausted = false;
+// Bumped by resetAndReloadGallery().  An in-flight /api/images response whose
+// generation no longer matches was issued under the previous filter set and is
+// discarded — otherwise a page fetched with the old label= could be appended
+// into a gallery that has already switched channels.
+let galleryGeneration = 0;
 let lastRenderedDate = null; // 'YYYY-MM-DD' of the last card appended (for day headers)
 let snrChart = null;
 let leafletMap = null;
@@ -322,6 +328,23 @@ let rxLiveBarCurrentLine = 0; // current scan line (1-based) — tracks how far 
 let rxLiveStartMs = 0;      // wall-clock ms when rx_start was received
 let rxLiveImageTimeMs = 0;  // total known transmission duration in ms (from image_time_ms)
 let rxLiveCountdownTimer = null; // setInterval handle for the countdown tick
+
+// ---------------------------------------------------------------------------
+// Focused channel state
+//
+// The decoder runs one instance per radio channel, but the big single-channel
+// panels (live RX preview, waterfall/FFT, audio preview, header SNR sparkline)
+// can only show one at a time.  `focusedLabel` is the instance label those
+// panels follow; the status badges are the selector.  Labels are immutable and
+// unique for the lifetime of the server process, so they are safe to persist.
+// ---------------------------------------------------------------------------
+const FOCUSED_LABEL_STORAGE_KEY = 'ubersdr_sstv_focused_label';
+let focusedLabel = '';          // instance label the single-channel panels follow
+let focusedInitialised = false; // true once the first /api/status response resolved it
+
+// The gallery's channel filter is a separate, independent choice: the user may
+// well want to watch one channel live while browsing another's history.
+const GALLERY_CHANNEL_STORAGE_KEY = 'ubersdr_sstv_gallery_channel';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -788,6 +811,45 @@ function imageSrc(rec) {
 }
 
 // ---------------------------------------------------------------------------
+// Channel identity
+//
+// Shared by the rail, the gallery channel chips, the thumb cards, the live
+// card and the metrics modal — one hash, so a channel is the same colour
+// everywhere in the UI, on every page load and in every browser, with no
+// palette to keep in sync with the server.
+// ---------------------------------------------------------------------------
+
+// Deterministic per-channel accent colour.  FNV-1a over the label, mapped to a
+// hue.
+function channelAccent(label) {
+  let h = 2166136261;
+  const s = String(label || '');
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return 'hsl(' + (Math.abs(h) % 360) + ', 70%, 62%)';
+}
+
+// The instance label an image record belongs to.  The server builds labels as
+// `<freq_hz>_<audio_mode>`, so a record maps straight back to its channel.
+// Records written before per-channel attribution carry no audio_mode; those
+// match no configured channel, which is exactly right — they cannot be
+// attributed to one.
+function recChannelLabel(rec) {
+  if (!rec || rec.frequency_hz == null) return '';
+  return rec.frequency_hz + '_' + (rec.audio_mode || '');
+}
+
+// "14.230 MHz USB" for a channel-ish object ({freq_hz, audio_mode}).
+function channelText(ch) {
+  if (!ch) return '';
+  const freq = (ch.freq_hz != null) ? (ch.freq_hz / 1e6).toFixed(3) + ' MHz' : '';
+  const mode = (ch.audio_mode || '').toUpperCase();
+  return [freq, mode].filter(Boolean).join(' ');
+}
+
+// ---------------------------------------------------------------------------
 // Gallery
 // ---------------------------------------------------------------------------
 // Returns true if rec passes the current gallery filter.
@@ -804,6 +866,11 @@ function recPassesFilter(rec) {
     const snr = snrTrue(rec);
     if (snr != null && snr < GALLERY_SNR_MIN_DB) return false;
   }
+  // Channel filter.  Paged records already arrive filtered by the server's
+  // label= param, but live arrivals do NOT: /api/live is one stream carrying
+  // every channel's completed images, so without this check an image from a
+  // filtered-out channel would be inserted straight into a filtered gallery.
+  if (galleryChannelFilter && recChannelLabel(rec) !== galleryChannelFilter) return false;
   return true;
 }
 
@@ -811,6 +878,15 @@ function buildThumbCard(rec) {
   const card = document.createElement('div');
   card.className = 'thumb-card';
   card.dataset.id = rec.id;
+  // Channel accent.  Only ever *visible* while <body> carries .multi-channel
+  // (see renderGalleryChannelChips) so a single-channel page looks unchanged,
+  // but it is set unconditionally: cards built before /api/status lands would
+  // otherwise stay uncoloured when the class arrives.
+  const cardLabel = recChannelLabel(rec);
+  card.dataset.channel = cardLabel;
+  if (card.style && card.style.setProperty) {
+    card.style.setProperty('--card-accent', channelAccent(cardLabel));
+  }
 
   const img = document.createElement('img');
   img.src = thumbSrc(rec);
@@ -830,7 +906,7 @@ function buildThumbCard(rec) {
   meta.innerHTML =
     `<div class="thumb-meta-top"><span class="mode-group">${completeBadge}<span class="mode">${sstvModeName(rec.sstv_mode) || '?'}</span></span>` +
     (rec.callsign ? `<span class="call">${rec.callsign}</span>` : '') + `</div>` +
-    `<div class="freq">${fmtFreq(rec.frequency_hz)} ${(rec.audio_mode || '').toUpperCase()}</div>` +
+    `<div class="freq channel-freq">${fmtFreq(rec.frequency_hz)} ${(rec.audio_mode || '').toUpperCase()}</div>` +
     (rec.snr_avg_db ? `<div class="snr"${snrStyle}>${fmtSNR(rec.snr_avg_db)} avg SNR</div>` : '');
   card.appendChild(meta);
 
@@ -974,6 +1050,133 @@ function applyGalleryFilter() {
     group.style.display = anyVisible ? '' : 'none';
   });
   updateGalleryCounts();
+}
+
+// ---------------------------------------------------------------------------
+// Gallery channel filter
+//
+// One chip per configured channel plus "All", each tinted with that channel's
+// accent.  The selection rides the existing /api/images `label=` param, so it
+// costs no extra connection, and it composes with the Complete / Latest /
+// ≥3.3 dB toggles by conjunction: the server ANDs label= with complete= and
+// min_snr=, and recPassesFilter() applies the same AND to live arrivals.
+// ---------------------------------------------------------------------------
+let galleryChipSig = '';  // channel set the chips were last built from
+
+function loadStoredGalleryChannel() {
+  try {
+    return localStorage.getItem(GALLERY_CHANNEL_STORAGE_KEY) || '';
+  } catch (_) {
+    return '';  // private mode / storage disabled — just start on "All"
+  }
+}
+
+function storeGalleryChannel(label) {
+  try {
+    if (label) localStorage.setItem(GALLERY_CHANNEL_STORAGE_KEY, label);
+    else       localStorage.removeItem(GALLERY_CHANNEL_STORAGE_KEY);
+  } catch (_) { /* non-fatal — the choice just won't survive a reload */ }
+}
+
+// The single place that changes which channel the gallery shows.
+function setGalleryChannelFilter(label) {
+  const next = label || '';
+  if (next === galleryChannelFilter) {
+    updateGalleryChipState();
+    return;
+  }
+  galleryChannelFilter = next;
+  storeGalleryChannel(next);
+  updateGalleryChipState();
+  resetAndReloadGallery();
+}
+
+// Reflect the current selection on the existing chip elements.
+function updateGalleryChipState() {
+  const wrap = document.getElementById('gallery-channel-chips');
+  if (!wrap) return;
+  wrap.querySelectorAll('.gallery-chip').forEach(chip => {
+    const on = (chip.dataset.label || '') === galleryChannelFilter;
+    chip.classList.toggle('active', on);
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+function buildGalleryChip(label, text, accent) {
+  const chip = document.createElement('span');
+  chip.className = 'gallery-chip';
+  chip.dataset.label = label;
+  chip.textContent = text;
+  chip.setAttribute('role', 'button');
+  chip.setAttribute('tabindex', '0');
+  chip.setAttribute('aria-pressed', 'false');
+  chip.title = label ? 'Show only images decoded on this channel'
+                     : 'Show images from every channel';
+  if (accent && chip.style && chip.style.setProperty) {
+    chip.style.setProperty('--chip-accent', accent);
+  }
+  chip.addEventListener('click', () => setGalleryChannelFilter(label));
+  chip.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+      ev.preventDefault();
+      setGalleryChannelFilter(label);
+    }
+  });
+  return chip;
+}
+
+// Rebuild the chip row from railChannels — the same authoritative channel set
+// the rail is built from, fed by /api/status.  Cheap and stateless, but only
+// rebuilt when the channel set actually changes so a status poll doesn't drop
+// keyboard focus out of a chip.
+function renderGalleryChannelChips() {
+  const chans = [...railChannels.values()];
+  const multi = chans.length >= 2;
+
+  // The per-card / detail-panel channel accents are gated on this class, so a
+  // single-channel page renders exactly as it did before.
+  if (document.body && document.body.classList) {
+    document.body.classList.toggle('multi-channel', multi);
+  }
+
+  const wrap = document.getElementById('gallery-channel-chips');
+  if (!wrap) return;
+
+  // With one channel the row would be "All" and nothing else — pure noise, the
+  // same reasoning that hides the rail at N=1.
+  if (!multi) {
+    wrap.hidden = true;
+    wrap.innerHTML = '';
+    galleryChipSig = '';
+    return;
+  }
+
+  wrap.hidden = false;
+  const sig = chans.map(c => c.label).join('|');
+  if (sig === galleryChipSig) {
+    updateGalleryChipState();
+    return;
+  }
+  galleryChipSig = sig;
+  wrap.innerHTML = '';
+  wrap.appendChild(buildGalleryChip('', 'All', ''));
+  for (const ch of chans) {
+    wrap.appendChild(buildGalleryChip(ch.label, channelText(ch) || ch.label, channelAccent(ch.label)));
+  }
+  updateGalleryChipState();
+}
+
+// /api/status is authoritative about which channels exist.  The stored filter
+// is only provisional until it has been vetted here: a channel that is gone
+// after a config change falls back to "All", and so does any filter once the
+// page is down to a single channel — the chips are hidden then, so there would
+// be no way back to "All".
+function syncGalleryChannelFilter() {
+  if (railChannels.size === 0) return;   // nothing authoritative yet
+  if (!galleryChannelFilter) return;
+  if (railChannels.size < 2 || !railChannels.has(galleryChannelFilter)) {
+    setGalleryChannelFilter('');         // reloads the gallery unfiltered
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1306,7 +1509,7 @@ function selectRecord(id) {
     ['Mode',      sstvModeName(rec.sstv_mode) || '—', ''],
     ['Decode',    decodeValue, decodeStyle],
     ['Callsign',  rec.callsign  || '—', ''],
-    ['Frequency', fmtFreq(rec.frequency_hz) + ' ' + (rec.audio_mode || '').toUpperCase(), ''],
+    ['Frequency', fmtFreq(rec.frequency_hz) + ' ' + (rec.audio_mode || '').toUpperCase(), '', 'channel-value'],
     ['RX start',  fmtTime(rec.rx_start), ''],
     ['RX end',    fmtTime(rec.rx_end), ''],
     ['SNR avg',   fmtSNR(rec.snr_avg_db), snrAvgStyle],
@@ -1325,8 +1528,13 @@ function selectRecord(id) {
     const km = haversineKm(rec.cty.latitude, rec.cty.longitude, receiverInfo.lat, receiverInfo.lon);
     rows.push(['Distance', fmtDistance(km), '']);
   }
-  meta.innerHTML = rows.map(([l, v, s]) =>
-    `<span class="label">${l}</span><span class="value"${s}>${v}</span>`
+  // Which channel this image came from — same accent as the rail, the chips
+  // and the thumb card.  Only rendered while <body>.multi-channel is set.
+  if (meta.style && meta.style.setProperty) {
+    meta.style.setProperty('--card-accent', channelAccent(recChannelLabel(rec)));
+  }
+  meta.innerHTML = rows.map(([l, v, s, cls]) =>
+    `<span class="label">${l}</span><span class="value${cls ? ' ' + cls : ''}"${s}>${v}</span>`
   ).join('');
 
   // SNR chart
@@ -1975,6 +2183,9 @@ function toggleSquelch() {
 }
 
 function updateMuteBtn() {
+  // The rail marks which row is audible; audio state only ever changes on a
+  // path that ends here, so this is the one place that needs to tell it.
+  updateRailAudio();
   const btn = document.getElementById('mute-btn');
   if (!btn) return;
   if (!audioPreviewEl) {
@@ -1997,11 +2208,9 @@ function toggleMute() {
   if (!audioPreviewEl) {
     // First click — start playback unmuted (this IS the user gesture).
     audioMuted = false;
-    const label = audioPreviewLabel ||
-      (window._instanceStatuses && window._instanceStatuses.length > 0
-        ? window._instanceStatuses[0].label
-        : '');
-    startAudioPreview(label);
+    // Follow the focused channel; audioPreviewLabel is kept in sync with it by
+    // setFocusedChannel() and is only a fallback if focus isn't resolved yet.
+    startAudioPreview(focusedLabel || audioPreviewLabel || '');
     return;
   }
   // Subsequent clicks — toggle mute; use applyGain() so squelch state is respected.
@@ -2215,10 +2424,10 @@ function initURLWidget() {
         fetch(BASE_PATH + '/api/status')
           .then(r => r.json())
           .then(statusData => {
+            // applyStatusData() re-validates the focused channel against the
+            // refreshed instance list, so focusedLabel is authoritative here.
             applyStatusData(statusData);
-            const newLabel = statusData.instances && statusData.instances.length > 0
-              ? statusData.instances[0].label
-              : audioPreviewLabel;
+            const newLabel = focusedLabel || audioPreviewLabel;
             console.log('[audio] URL changed — restarting preview for label:', newLabel);
             startAudioPreview(newLabel);
           })
@@ -2243,6 +2452,178 @@ function setURLDisplay(urlStr) {
 }
 
 // ---------------------------------------------------------------------------
+// Focused channel
+// ---------------------------------------------------------------------------
+// Read the persisted focus choice.  Storage can throw (private mode, disabled
+// site data), so every access is guarded.
+function loadStoredFocusedLabel() {
+  try {
+    return localStorage.getItem(FOCUSED_LABEL_STORAGE_KEY) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+// Only non-empty labels are stored: an empty focus means "no instances right
+// now", which should not wipe a perfectly good preference.  A stale stored
+// label is harmless because it is always validated on boot.
+function storeFocusedLabel(label) {
+  if (!label) return;
+  try {
+    localStorage.setItem(FOCUSED_LABEL_STORAGE_KEY, label);
+  } catch (_) { /* non-fatal — focus just won't survive a reload */ }
+}
+
+// Validate the current focus against the live instance list.  The channel
+// configuration is static per process but can change across restarts, so a
+// persisted label may no longer exist — in that case fall back to the first
+// instance.  Returns '' when there are no instances at all.
+function resolveFocusedLabel(instances) {
+  if (!instances || instances.length === 0) return '';
+  if (focusedLabel && instances.some(s => s.label === focusedLabel)) return focusedLabel;
+  const [firstInstance] = instances;
+  return firstInstance.label || '';
+}
+
+// Human-readable "14.230 MHz USB" for the focused instance, or '' if unknown.
+function focusedChannelText() {
+  const list = window._instanceStatuses || [];
+  const s = list.find(i => i.label === focusedLabel);
+  if (!s) return '';
+  const freq = (s.freq_hz != null) ? (s.freq_hz / 1e6).toFixed(3) + ' MHz' : '';
+  const mode = (s.audio_mode || '').toUpperCase();
+  return [freq, mode].filter(Boolean).join(' ');
+}
+
+// Reflect `focusedLabel` in the badge row and in the live RX panel heading.
+function updateBadgeFocus() {
+  const container = document.getElementById('status-badges');
+  if (container) {
+    for (const b of container.querySelectorAll('.badge')) {
+      const on = b.dataset.label === focusedLabel;
+      b.classList.toggle('focused', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  const chanEl = document.getElementById('rx-live-channel');
+  if (chanEl) chanEl.textContent = focusedChannelText();
+  // The single live gallery card follows the focus too — one card, not one per
+  // channel: the rail already gives every channel its own live row, so a card
+  // each would just duplicate it.
+  updateLiveCardChannel();
+  // The rail rows are the second selector for the same choice — keep both in
+  // step from the one place that already runs on every focus change.
+  updateRailFocus();
+  updateRailAudio();
+}
+
+// Label the live gallery card with the channel it is currently following and
+// give it that channel's accent.  Called on every focus change, and again from
+// updateLiveCard() whenever a reception leaves the frequency line blank.
+function updateLiveCardChannel() {
+  const card   = document.getElementById('live-gallery-card');
+  const freqEl = document.getElementById('live-card-freq');
+  const chanEl = document.getElementById('live-card-channel');
+  const text   = focusedChannelText();
+  if (card && card.style && card.style.setProperty) {
+    card.style.setProperty('--card-accent', channelAccent(focusedLabel));
+  }
+  // The LIVE badge floats over a narrow thumbnail, so it gets the bare MHz
+  // figure; the meta line below carries the full "14.230 MHz USB".  Hidden by
+  // CSS unless there is more than one channel.
+  if (chanEl) {
+    const ch = railChannels.get(focusedLabel);
+    chanEl.textContent = (ch && ch.freq_hz != null) ? (ch.freq_hz / 1e6).toFixed(3) : '';
+  }
+  // While a picture is coming in, the frequency reported by the reception wins.
+  if (freqEl && !freqEl.textContent && railChannels.size >= 2) freqEl.textContent = text;
+}
+
+// Clear everything that holds samples belonging to the previously focused
+// channel.  Carrying them across a switch would silently mix two channels.
+function resetFocusedChannelPanels() {
+  // Header SNR sparkline.
+  liveSNRData.length = 0;
+  if (liveSNRChart) {
+    liveSNRChart.data.datasets[0].data = [];
+    liveSNRChart.update('none');
+  }
+  const snrValueEl = document.getElementById('live-snr-value');
+  if (snrValueEl) { snrValueEl.textContent = '—'; snrValueEl.style.color = ''; }
+
+  // Live RX panel — any reception in progress belonged to the old channel.
+  rxLiveActive = false;
+  rxLiveSNRData = [];
+  if (rxLiveSNRChart) {
+    rxLiveSNRChart.data.datasets[0].data = rxLiveSNRData;
+    rxLiveSNRChart.update('none');
+  }
+  rxLiveBarSNRValues = [];
+  rxLiveBarTotalLines = 0;
+  rxLiveBarCurrentLine = 0;
+  rxLiveStartMs = 0;
+  rxLiveImageTimeMs = 0;
+  if (rxLiveCountdownTimer) { clearInterval(rxLiveCountdownTimer); rxLiveCountdownTimer = null; }
+
+  const countdownEl = document.getElementById('rx-live-countdown');
+  if (countdownEl) countdownEl.textContent = '';
+  const barEl = document.getElementById('rx-live-progress-bar');
+  if (barEl) barEl.style.width = '0%';
+  const rxLabelEl = document.getElementById('rx-live-label');
+  if (rxLabelEl) rxLabelEl.textContent = '';
+  const panelEl = document.getElementById('rx-live-panel');
+  if (panelEl) panelEl.classList.remove('receiving');
+  const imgEl = document.getElementById('rx-live-image');
+  if (imgEl) imgEl.src = '';
+  updateLiveCard('', '', '', '');
+}
+
+// The single place that changes which channel the big panels follow.
+// Persists the choice, updates the badge state and re-points every stream.
+function setFocusedChannel(label) {
+  const next = label || '';
+  // Re-selecting the channel we are already showing must not tear down and
+  // rebuild the streams (this is the common case with a single channel).
+  if (focusedInitialised && next === focusedLabel) {
+    updateBadgeFocus();
+    return;
+  }
+
+  focusedLabel = next;
+  focusedInitialised = true;
+  storeFocusedLabel(focusedLabel);
+  updateBadgeFocus();
+
+  // The panels are about to show a different channel.
+  resetFocusedChannelPanels();
+
+  // Both helpers close their previous EventSource before opening the new one.
+  connectRxLive(focusedLabel);
+  connectFFT(focusedLabel);
+
+  if (audioPreviewEl) {
+    // Audio is already playing (the user has made the mute-button gesture) —
+    // follow the focus.
+    startAudioPreview(focusedLabel);
+  } else {
+    // Do NOT start audio here: browsers block autoplay until a user gesture.
+    // Just remember which channel the first mute-button click should open.
+    audioPreviewLabel = focusedLabel;
+  }
+}
+
+// Called on every /api/status response.  Only re-focuses when the current
+// choice is unusable (first boot, or the channel is gone after a restart).
+function syncFocusedChannel(instances) {
+  const resolved = resolveFocusedLabel(instances);
+  if (!focusedInitialised || resolved !== focusedLabel) {
+    setFocusedChannel(resolved);
+  } else {
+    updateBadgeFocus();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Status badges
 // ---------------------------------------------------------------------------
 function renderBadges(statuses) {
@@ -2257,94 +2638,407 @@ function renderBadges(statuses) {
     b.dataset.label = s.label;
     const icon = s.status === 'running' ? '●' : s.status === 'reconnecting' ? '↻' : '✕';
     b.textContent = `${icon} ${(s.freq_hz / 1e6).toFixed(3)} MHz ${(s.audio_mode || '').toUpperCase()}`;
-    container.appendChild(b);
-  }
-
-  // Pre-populate the tune box with the first instance's current frequency.
-  if (statuses.length > 0) {
-    const first = statuses[0];
-    const freqInput = document.getElementById('freq-input');
-    if (freqInput) {
-      const display = (first.freq_hz / 1e6).toFixed(3);
-      freqInput._lastKnownFreq = display;
-      // Only update the visible value when the user isn't actively editing
-      if (!freqInput._userEditing) {
-        freqInput.value = display;
-      }
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Frequency tuning
-// ---------------------------------------------------------------------------
-// Minimum and maximum tunable frequency in Hz
-const FREQ_MIN_HZ = 10e3;   // 10 kHz
-const FREQ_MAX_HZ = 30e6;   // 30 MHz
-
-function applyFrequency() {
-  const freqInput = document.getElementById('freq-input');
-  const statusEl  = document.getElementById('freq-status');
-
-  if (!freqInput) return;
-
-  const mhz = parseFloat(freqInput.value.trim());
-  if (isNaN(mhz)) {
-    if (statusEl) { statusEl.textContent = '✗ invalid frequency'; statusEl.className = 'freq-err'; }
-    return;
-  }
-  const freqHz = Math.round(mhz * 1e6);
-  if (freqHz < FREQ_MIN_HZ || freqHz > FREQ_MAX_HZ) {
-    if (statusEl) {
-      statusEl.textContent = '✗ must be 10 kHz – 30 MHz';
-      statusEl.className = 'freq-err';
-    }
-    return;
-  }
-
-  // Pick the target instance label — use the first available instance.
-  const statuses = window._instanceStatuses || [];
-  if (statuses.length === 0) {
-    if (statusEl) { statusEl.textContent = '✗ no instance'; statusEl.className = 'freq-err'; }
-    return;
-  }
-  const label = statuses[0].label;
-
-  requireAuth(() => {
-    if (statusEl) { statusEl.textContent = '…'; statusEl.className = ''; }
-    _doApplyFrequency(label, freqHz, statusEl);
-  });
-}
-
-function _doApplyFrequency(label, freqHz, statusEl) {
-  fetch(BASE_PATH + `/api/instances/${encodeURIComponent(label)}/frequency`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ freq_hz: freqHz }),
-  })
-    .then(r => {
-      if (!r.ok) return r.text().then(t => { throw new Error(t); });
-      return r.json();
-    })
-    .then(data => {
-      if (statusEl) {
-        statusEl.textContent = `✓ ${(data.freq_hz / 1e6).toFixed(3)} MHz`;
-        statusEl.className = 'freq-ok';
-        setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
-      }
-      // Update the cached status so the badge reflects the new freq immediately.
-      if (window._instanceStatuses && window._instanceStatuses.length > 0) {
-        window._instanceStatuses[0].freq_hz = data.freq_hz;
-        window._instanceStatuses[0].label   = data.label;
-        renderBadges(window._instanceStatuses);
-      }
-    })
-    .catch(err => {
-      if (statusEl) {
-        statusEl.textContent = '✗ ' + err.message;
-        statusEl.className = 'freq-err';
+    // Badges double as the channel selector for the single-channel panels.
+    b.setAttribute('role', 'button');
+    b.setAttribute('tabindex', '0');
+    b.setAttribute('aria-pressed', 'false');
+    b.title = 'Show this channel in the live RX, waterfall and audio panels';
+    b.addEventListener('click', () => setFocusedChannel(s.label));
+    b.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+        ev.preventDefault();
+        setFocusedChannel(s.label);
       }
     });
+    container.appendChild(b);
+  }
+  // Re-apply focus styling — the badge elements were just recreated.
+  updateBadgeFocus();
+
+  // /api/status is authoritative about which channels exist; feed the rail
+  // from the same response rather than giving it a poll of its own.
+  syncRailChannels(statuses);
+}
+
+// ---------------------------------------------------------------------------
+// Channel rail
+//
+// A horizontal strip of one row per decoder instance, sitting between the
+// header and the three-panel main layout.  Each row is a self-contained
+// summary of a channel — status dot, frequency + mode, SNR sparkline, live or
+// last-completed thumbnail, and a progress bar while a picture is coming in —
+// and doubles as the selector for the single-channel panels (it calls
+// setFocusedChannel(), the same entry point the header badges use).
+//
+// Everything the rail consumes rides the EXISTING /api/live EventSource
+// (channel_state / rail_thumb / rail_rx_end / image / snr).  The rail opens NO
+// connection of its own: the page has a budget of 4 and HTTP/1.1 caps at 6.
+// The only network the rail does on its own account is a single one-shot
+// /api/images?label=…&limit=1 per channel at boot, to seed the idle thumbnail.
+//
+// Rows are keyed by instance label, which is immutable and unique for the life
+// of the server process, so a row survives status polls, reconnects and
+// re-renders without losing its sparkline history or reception state.
+// ---------------------------------------------------------------------------
+const RAIL_SPARK_POINTS = 64;   // samples kept per row (~16 s at 4 Hz)
+const RAIL_SPARK_MIN_DB = -5;   // same scale as the header sparkline
+const RAIL_SPARK_MAX_DB = 45;
+
+const railRows     = new Map(); // label -> row object (DOM refs + row state)
+const railChannels = new Map(); // label -> { label, freq_hz, audio_mode, status }
+const railIdle     = new Map(); // label -> { src, time } last completed image
+const railSeeded   = new Set(); // labels whose idle-thumb seed fetch was issued
+
+// channelAccent() lives in the shared "Channel identity" helpers above — the
+// rail, the gallery chips, the thumb cards and the metrics modal all colour a
+// channel from that one hash so a channel looks the same everywhere.
+
+// Compact timestamp for an idle row: "14:32 UTC", or "09-08 14:32 UTC" when the
+// last decode was not today.  236 px of row leaves no space for a full stamp.
+function railTimeText(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const day = d.toISOString().slice(0, 10);
+  const hm  = d.toISOString().slice(11, 16) + ' UTC';
+  return day === new Date().toISOString().slice(0, 10) ? hm : day.slice(5) + ' ' + hm;
+}
+
+// Build one row.  Rows are interactive controls, matching how the badges were
+// done: role=button, tabindex, Enter/Space, aria-pressed for the focused state.
+function railCreateRow(ch) {
+  const accent = channelAccent(ch.label);
+
+  const root = document.createElement('div');
+  root.className = 'rail-row';
+  root.dataset.label = ch.label;
+  root.setAttribute('role', 'button');
+  root.setAttribute('tabindex', '0');
+  root.setAttribute('aria-pressed', 'false');
+  root.title = 'Show this channel in the live RX, waterfall and audio panels';
+  if (root.style && root.style.setProperty) root.style.setProperty('--rail-accent', accent);
+
+  const thumbWrap = document.createElement('div');
+  thumbWrap.className = 'rail-thumb-wrap';
+  const thumb = document.createElement('img');
+  thumb.className = 'rail-thumb';
+  thumb.alt = '';
+  const none = document.createElement('div');
+  none.className = 'rail-thumb-none';
+  none.textContent = 'no image';
+  const liveTag = document.createElement('div');
+  liveTag.className = 'rail-live-tag';
+  liveTag.textContent = 'LIVE';
+  thumbWrap.appendChild(thumb);
+  thumbWrap.appendChild(none);
+  thumbWrap.appendChild(liveTag);
+
+  const info = document.createElement('div');
+  info.className = 'rail-info';
+
+  const top = document.createElement('div');
+  top.className = 'rail-line';
+  const dot = document.createElement('span');
+  dot.className = 'rail-dot';
+  const freq = document.createElement('span');
+  freq.className = 'rail-freq';
+  const mode = document.createElement('span');
+  mode.className = 'rail-mode';
+  const audio = document.createElement('span');
+  audio.className = 'rail-audio';
+  audio.textContent = '🔊';
+  top.appendChild(dot); top.appendChild(freq); top.appendChild(mode); top.appendChild(audio);
+
+  const mid = document.createElement('div');
+  mid.className = 'rail-line';
+  const spark = document.createElement('canvas');
+  spark.className = 'rail-spark';
+  spark.width = 96;
+  spark.height = 18;
+  const snrText = document.createElement('span');
+  snrText.className = 'rail-snr';
+  snrText.textContent = '—';
+  mid.appendChild(spark); mid.appendChild(snrText);
+
+  const prog = document.createElement('div');
+  prog.className = 'rail-prog';
+  const progBar = document.createElement('div');
+  progBar.className = 'rail-prog-bar';
+  prog.appendChild(progBar);
+
+  const meta = document.createElement('div');
+  meta.className = 'rail-meta';
+
+  info.appendChild(top); info.appendChild(mid); info.appendChild(prog); info.appendChild(meta);
+  root.appendChild(thumbWrap);
+  root.appendChild(info);
+
+  // A thumbnail file can disappear (deleted from the gallery, cleaned up on
+  // disk).  Fall back to the placeholder rather than a broken-image icon.
+  thumb.addEventListener('error', () => {
+    thumb.style.display = 'none';
+    none.style.display  = 'block';
+  });
+
+  // Rows are the same selector as the badges — one entry point, no new state.
+  root.addEventListener('click', () => setFocusedChannel(ch.label));
+  root.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+      ev.preventDefault();
+      setFocusedChannel(ch.label);
+    }
+  });
+
+  return {
+    label: ch.label, accent,
+    root, thumb, none, dot, freq, mode, audio, spark, snrText, progBar, meta,
+    thumbSrc: '',                       // last src actually assigned
+    snr: [],                            // sparkline ring (newest last)
+    receiving: false, liveB64: '', line: 0, total: 0, sstvMode: '', callsign: '',
+  };
+}
+
+// Apply the static per-channel facts (status dot, frequency, mode).
+function railUpdateChannel(row, ch) {
+  const status = ch.status || 'stopped';
+  row.dot.className = 'rail-dot ' + status;
+  row.dot.textContent = status === 'running' ? '●' : status === 'reconnecting' ? '↻' : '✕';
+  row.dot.title = status;
+  row.freq.textContent = (ch.freq_hz != null) ? (ch.freq_hz / 1e6).toFixed(3) + ' MHz' : '';
+  row.mode.textContent = (ch.audio_mode || '').toUpperCase();
+}
+
+// Paint a row from its current state.  The idle/receiving/complete/discarded
+// lifecycle all funnel through here: `receiving` picks the live partial,
+// anything else falls back to railIdle, which the `image` event and the boot
+// seed keep up to date.  A discarded reception therefore reverts to exactly
+// the thumbnail the row showed before, with no extra bookkeeping.
+function railRender(row) {
+  const idle = railIdle.get(row.label);
+  const src  = (row.receiving && row.liveB64)
+    ? 'data:image/jpeg;base64,' + row.liveB64
+    : (idle ? idle.src : '');
+
+  if (src && src !== row.thumbSrc) {
+    row.thumbSrc = src;
+    row.thumb.src = src;
+  }
+  row.thumb.style.display = src ? 'block' : 'none';
+  row.none.style.display  = src ? 'none'  : 'block';
+
+  row.root.classList.toggle('receiving', !!row.receiving);
+
+  if (row.receiving) {
+    const pct = row.total > 0 ? Math.max(0, Math.min(100, (row.line / row.total) * 100)) : 0;
+    row.progBar.style.width = pct.toFixed(1) + '%';
+    const bits = [];
+    if (row.sstvMode) bits.push(row.sstvMode);
+    if (row.callsign) bits.push(row.callsign);
+    row.meta.textContent = bits.length ? bits.join(' · ') : 'Receiving…';
+  } else {
+    row.progBar.style.width = '0%';
+    row.meta.textContent = idle ? idle.time : 'No decodes yet';
+  }
+}
+
+// Per-row SNR sparkline.  Deliberately hand-drawn on a small canvas rather
+// than a Chart.js instance: there is one of these per channel and they update
+// ~4 times a second each.
+function drawRailSpark(row) {
+  const c = row.spark;
+  if (!c || typeof c.getContext !== 'function') return;
+  const ctx = c.getContext('2d');
+  if (!ctx) return;
+  const w = c.width, h = c.height;
+  ctx.clearRect(0, 0, w, h);
+  const d = row.snr;
+  if (d.length < 2) return;
+  const span = RAIL_SPARK_MAX_DB - RAIL_SPARK_MIN_DB;
+  const yFor = v => {
+    const clamped = Math.max(RAIL_SPARK_MIN_DB, Math.min(RAIL_SPARK_MAX_DB, v));
+    return h - 1 - ((clamped - RAIL_SPARK_MIN_DB) / span) * (h - 2);
+  };
+  const step = w / (RAIL_SPARK_POINTS - 1);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = row.accent;
+  ctx.beginPath();
+  for (let i = 0; i < d.length; i++) {
+    const x = w - (d.length - 1 - i) * step;
+    if (i === 0) ctx.moveTo(x, yFor(d[i]));
+    else         ctx.lineTo(x, yFor(d[i]));
+  }
+  ctx.stroke();
+}
+
+// Route one `snr` event to its own row.  This is the UNFILTERED path: every
+// channel's samples land on that channel's sparkline.  The header sparkline
+// and the live RX chart keep their separate focusedLabel check — mixing the
+// two is the cross-channel contamination bug that check exists to prevent.
+function railPushSNR(label, snrDb) {
+  const row = railRows.get(label);
+  if (!row || snrDb == null) return;
+  row.snr.push(snrDb);
+  if (row.snr.length > RAIL_SPARK_POINTS) row.snr.shift();
+  row.snrText.textContent = snrDb.toFixed(1) + ' dB';
+  drawRailSpark(row);
+}
+
+// Reflect focusedLabel on the rows.  Called from updateBadgeFocus().
+function updateRailFocus() {
+  for (const [label, row] of railRows) {
+    const on = label === focusedLabel;
+    row.root.classList.toggle('focused', on);
+    row.root.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
+
+// Audio preview is one PCM stream for the whole page, so at most one row can
+// be audible.  Mark it explicitly instead of leaving the user to infer it from
+// the focus ring.  No per-row audio control: that would open a second stream.
+function updateRailAudio() {
+  const audible = (audioPreviewEl && !audioMuted) ? audioPreviewLabel : '';
+  for (const [label, row] of railRows) {
+    const on = !!audible && label === audible;
+    row.root.classList.toggle('audible', on);
+    row.audio.title = on ? 'Audio preview is playing this channel' : '';
+  }
+}
+
+// Seed the idle thumbnail for channels that have not shown one yet: one
+// request per channel, once, at the point the row first appears.
+//
+// `label` on /api/images is newer than this file.  A server without it ignores
+// the parameter and answers with the newest image from ANY channel, which
+// would put the wrong picture on the row — so the record is verified against
+// the channel it was requested for and dropped if it does not match.
+function railSeedIdle(chans) {
+  for (const ch of chans) {
+    if (railSeeded.has(ch.label) || railIdle.has(ch.label)) continue;
+    railSeeded.add(ch.label);
+    fetch(BASE_PATH + '/api/images?limit=1&snr_series=0&label=' + encodeURIComponent(ch.label))
+      .then(r => (r && r.ok) ? r.json() : [])
+      .then(list => {
+        const rec = Array.isArray(list) ? list[0] : null;
+        if (!rec) return;
+        if (rec.frequency_hz !== ch.freq_hz) return;
+        if ((rec.audio_mode || '') !== (ch.audio_mode || '')) return;
+        railIdle.set(ch.label, {
+          src:  thumbSrc(rec),
+          time: railTimeText(rec.rx_end || rec.rx_start),
+        });
+        const row = railRows.get(ch.label);
+        if (row) railRender(row);
+      })
+      .catch(() => { /* no thumbnail is a fine outcome — the row says so */ });
+  }
+}
+
+// Rebuild the strip from railChannels, reusing existing row elements so that
+// sparkline history and an in-progress reception survive a status poll.
+function renderRail() {
+  // The gallery chips are built from the same authoritative channel set, so
+  // they are refreshed here rather than given a poll of their own.  Both run
+  // before the single-channel early return below.
+  syncGalleryChannelFilter();
+  renderGalleryChannelChips();
+
+  const rail = document.getElementById('channel-rail');
+  if (!rail) return;
+  const chans = [...railChannels.values()];
+
+  // With a single channel the rail is pure redundancy — the header badge
+  // already carries the status, and the big panels are already showing it.
+  if (chans.length < 2) {
+    rail.hidden = true;
+    rail.innerHTML = '';
+    railRows.clear();
+    return;
+  }
+  rail.hidden = false;
+
+  // Drop rows for channels that no longer exist (config change across a
+  // server restart).
+  for (const [label, row] of [...railRows]) {
+    if (railChannels.has(label)) continue;
+    if (row.root && typeof row.root.remove === 'function') row.root.remove();
+    railRows.delete(label);
+  }
+
+  for (const ch of chans) {
+    let row = railRows.get(ch.label);
+    if (!row) {
+      row = railCreateRow(ch);
+      railRows.set(ch.label, row);
+    }
+    railUpdateChannel(row, ch);
+    // appendChild on an element already in the container just moves it, so
+    // this also keeps the rows in the server's channel order.
+    rail.appendChild(row.root);
+    railRender(row);
+    drawRailSpark(row);
+  }
+
+  updateRailFocus();
+  updateRailAudio();
+  railSeedIdle(chans);
+}
+
+// Add or update one channel without disturbing the others — used by the
+// channel_state catch-up, which may arrive before the first /api/status.
+function railUpsertChannel(ch) {
+  if (!ch || !ch.label) return;
+  const prev = railChannels.get(ch.label) || {};
+  railChannels.set(ch.label, {
+    label:      ch.label,
+    freq_hz:    ch.freq_hz    != null ? ch.freq_hz    : prev.freq_hz,
+    audio_mode: ch.audio_mode != null ? ch.audio_mode : prev.audio_mode,
+    status:     ch.status || prev.status || '',
+  });
+  renderRail();
+}
+
+// Replace the channel set from an /api/status response, which is the
+// authoritative list of what exists.
+function syncRailChannels(statuses) {
+  const seen = new Set();
+  for (const s of statuses || []) {
+    if (!s || !s.label) continue;
+    seen.add(s.label);
+    const prev = railChannels.get(s.label) || {};
+    railChannels.set(s.label, {
+      label:      s.label,
+      freq_hz:    s.freq_hz    != null ? s.freq_hz    : prev.freq_hz,
+      audio_mode: s.audio_mode != null ? s.audio_mode : prev.audio_mode,
+      status:     s.status || '',
+    });
+  }
+  for (const label of [...railChannels.keys()]) {
+    if (!seen.has(label)) railChannels.delete(label);
+  }
+  renderRail();
+}
+
+// A completed image is the authoritative "this is what the channel last
+// decoded".  Records carry frequency_hz + audio_mode, and the server builds
+// labels as `<freq_hz>_<audio_mode>`, so the record maps straight to a row.
+function railNoteImage(rec) {
+  if (!rec || rec.frequency_hz == null) return;
+  const label = rec.frequency_hz + '_' + (rec.audio_mode || '');
+  railIdle.set(label, {
+    src:  thumbSrc(rec),
+    time: railTimeText(rec.rx_end || rec.rx_start),
+  });
+  railSeeded.add(label); // the seed fetch would only tell us what we now know
+  const row = railRows.get(label);
+  if (!row) return;
+  // complete: the reception is over and the saved thumbnail supersedes the
+  // live partial.  rail_rx_end may arrive before or after this — both paths
+  // render from railIdle, so the order does not matter.
+  row.receiving = false;
+  row.liveB64 = '';
+  row.line = 0; row.total = 0;
+  row.sstvMode = ''; row.callsign = '';
+  railRender(row);
 }
 
 // ---------------------------------------------------------------------------
@@ -2359,7 +3053,13 @@ function connectSSE() {
       const rec = JSON.parse(e.data);
       // prependCard() itself checks deletedIDs, but guard here too so we
       // never even parse/process a record that was deleted this session.
-      if (!deletedIDs.has(rec.id)) prependCard(rec);
+      if (!deletedIDs.has(rec.id)) {
+        // Same event drives the rail row's "complete" transition.  Done first
+        // so the row is never left stuck mid-reception by a gallery render
+        // error — the two are independent consumers of the same record.
+        railNoteImage(rec);
+        prependCard(rec);
+      }
     } catch (err) {
       console.error('SSE parse error', err);
     }
@@ -2378,14 +3078,91 @@ function connectSSE() {
     if (!e.data) return;
     try {
       const d = JSON.parse(e.data);
-      if (d.snr_db != null) {
-        // Always update the header sparkline.
+      // The rail wants the UNFILTERED stream: every channel's sample goes to
+      // its own row, routed by label.  This must stay above the focusedLabel
+      // check below, and must not be folded into it.
+      railPushSNR(d.label, d.snr_db);
+      // /api/live is a single stream carrying events from EVERY instance, so
+      // only the focused channel's samples may reach the single-channel panels
+      // — otherwise all channels interleave into one sparkline/chart.
+      if (d.snr_db != null && d.label === focusedLabel) {
+        // Update the header sparkline.
         pushLiveSNR(d.snr_db);
         // Also feed the live RX detail chart while a reception is in progress.
         if (rxLiveActive) pushLiveRxSNR(d.t || Date.now(), d.snr_db);
       }
     } catch (err) {
       console.error('SSE snr parse error', err);
+    }
+  });
+
+  // ── Multi-channel rail events ──
+  // All three ride this same connection.  Adding a second EventSource here
+  // would push the page from 4 browser connections to 5, and the next feature
+  // to 6 — the HTTP/1.1 per-origin limit, with TLS (and therefore h2) off by
+  // default.  Never open one for these.
+
+  // Catch-up on connect (one per channel) and on every status change.
+  es.addEventListener('channel_state', e => {
+    if (!e.data) return;
+    try {
+      const d = JSON.parse(e.data);
+      if (!d.label) return;
+      railUpsertChannel(d);   // creates the row if this is the catch-up burst
+      const row = railRows.get(d.label);
+      if (!row) return;       // single-channel page: rail is hidden, nothing to do
+      row.receiving = !!d.receiving;
+      row.line      = d.line  || 0;
+      row.total     = d.total || 0;
+      row.sstvMode  = d.sstv_mode || '';
+      row.callsign  = d.callsign  || '';
+      // jpeg_b64 is only populated while receiving; a reconnect mid-decode
+      // therefore paints the partial immediately instead of waiting up to one
+      // rail-thumb interval.
+      row.liveB64 = (d.receiving && d.jpeg_b64) ? d.jpeg_b64 : '';
+      railRender(row);
+    } catch (err) {
+      console.error('SSE channel_state parse error', err);
+    }
+  });
+
+  // Rate-limited live partial while receiving.
+  es.addEventListener('rail_thumb', e => {
+    if (!e.data) return;
+    try {
+      const d = JSON.parse(e.data);
+      const row = railRows.get(d.label);
+      if (!row) return;
+      row.receiving = true;
+      if (d.jpeg_b64) row.liveB64 = d.jpeg_b64;
+      row.line  = d.line  || 0;
+      row.total = d.total || 0;
+      if (d.sstv_mode) row.sstvMode = d.sstv_mode;
+      if (d.callsign)  row.callsign = d.callsign;
+      railRender(row);
+    } catch (err) {
+      console.error('SSE rail_thumb parse error', err);
+    }
+  });
+
+  // Reception finished, saved or not.  A saved image also arrives as an
+  // `image` event (handled above); a DISCARDED one produces no image event at
+  // all, so without this the row would stay stuck mid-reception forever.
+  // Clearing the live state is enough for both: railRender() then falls back
+  // to railIdle, i.e. the thumbnail the row showed before the reception.
+  es.addEventListener('rail_rx_end', e => {
+    if (!e.data) return;
+    try {
+      const d = JSON.parse(e.data);
+      const row = railRows.get(d.label);
+      if (!row) return;
+      row.receiving = false;
+      row.liveB64 = '';
+      row.line = 0; row.total = 0;
+      row.sstvMode = ''; row.callsign = '';
+      railRender(row);
+    } catch (err) {
+      console.error('SSE rail_rx_end parse error', err);
     }
   });
 
@@ -2419,7 +3196,12 @@ function updateLiveCard(jpegB64, mode, callsign, freq) {
   }
   if (modeEl  && mode     != null) modeEl.textContent  = mode     || '—';
   if (callEl  && callsign != null) callEl.textContent   = callsign || '';
-  if (freqEl  && freq     != null) freqEl.textContent   = freq     || '';
+  // No reception frequency (idle, or the meta was just cleared) — fall back to
+  // the focused channel so the one live card always says which channel it is
+  // following.  Only with 2+ channels: at N=1 the idle card stays as it was.
+  if (freqEl  && freq     != null) {
+    freqEl.textContent = freq || (railChannels.size >= 2 ? focusedChannelText() : '');
+  }
   if (card    && jpegB64  != null) {
     // Show/hide the idle overlay based on whether we have image data.
     if (jpegB64) card.classList.add('receiving');
@@ -2728,6 +3510,9 @@ function connectRxLive(label) {
 // ---------------------------------------------------------------------------
 function applyStatusData(data) {
   if (data.instances) renderBadges(data.instances);
+  // Resolve/validate the focused channel against the instance list we just got.
+  // On the first response this also performs the initial stream connection.
+  syncFocusedChannel(data.instances || []);
   if (data.receiver_lat != null) receiverLat = data.receiver_lat;
   if (data.receiver_lon != null) receiverLon = data.receiver_lon;
   if (data.ubersdr_url  != null) setURLDisplay(data.ubersdr_url);
@@ -2763,16 +3548,31 @@ function galleryFilterParams() {
   });
   if (galleryCompleteOnly) params.set('complete', '1');
   if (gallerySNRFilter)    params.set('min_snr', String(GALLERY_SNR_MIN_DB));
+  // Channel filter.  `label` and `freq` are mutually exclusive server-side; the
+  // UI only ever sends `label` (exact frequency + audio mode).
+  if (galleryChannelFilter) params.set('label', galleryChannelFilter);
   return params.toString();
 }
 
 function loadMoreImages() {
   if (galleryLoading || galleryExhausted) return;
   galleryLoading = true;
+  const gen = galleryGeneration;
 
   fetch(BASE_PATH + `/api/images?${galleryFilterParams()}`)
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) {
+        // The server answers a bad/conflicting filter with 400 + {"error":…}.
+        const err = new Error('HTTP ' + r.status);
+        err.status = r.status;
+        throw err;
+      }
+      return r.json();
+    })
     .then(records => {
+      // A newer filter set has been applied since this page was requested —
+      // these records belong to a gallery that no longer exists.
+      if (gen !== galleryGeneration) return;
       if (!records || records.length === 0) {
         galleryExhausted = true;
         galleryLoading = false;
@@ -2795,7 +3595,14 @@ function loadMoreImages() {
     })
     .catch(err => {
       console.error('load images:', err);
+      if (gen !== galleryGeneration) return;
       galleryLoading = false;
+      // A rejected channel filter must never leave the gallery permanently
+      // empty — drop back to "All" and reload once.  Only ever fires while a
+      // filter is set, so it cannot loop.
+      if (err && err.status === 400 && galleryChannelFilter) {
+        setGalleryChannelFilter('');
+      }
     });
 }
 
@@ -2812,7 +3619,9 @@ function resetAndReloadGallery() {
     }
   }
 
-  // Reset pagination state.
+  // Reset pagination state.  Bumping the generation retires any /api/images
+  // page still in flight under the previous filters.
+  galleryGeneration++;
   allRecords = [];
   galleryOffset = 0;
   galleryLoading = false;
@@ -3143,6 +3952,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Restore the gallery's channel filter before the first page is fetched, so
+  // a returning user doesn't see the unfiltered gallery flash past.  Like the
+  // focused channel it is provisional: renderRail() -> syncGalleryChannelFilter()
+  // validates it against the live channel list and falls back to "All" if the
+  // channel is gone (or if there is now only one channel).
+  galleryChannelFilter = loadStoredGalleryChannel();
+
   initLiveSNRChart();
   initAudioOutputSelector();
   initAudioPanel();
@@ -3150,21 +3966,22 @@ document.addEventListener('DOMContentLoaded', () => {
   initGalleryScroll();
   connectSSE();
 
-  // Poll status once immediately; on the first successful response start the
-  // live RX preview and audio panel for the first instance we find.
+  // Restore the previously focused channel.  It is only provisional until the
+  // /api/status response below validates it against the live instance list —
+  // the channel configuration may have changed since it was stored.
+  focusedLabel = loadStoredFocusedLabel();
+
+  // Poll status once immediately; on the first successful response
+  // applyStatusData() -> syncFocusedChannel() resolves the focused channel and
+  // connects the live RX preview and waterfall to it.
   fetch(BASE_PATH + '/api/status')
     .then(r => r.json())
     .then(data => {
       applyStatusData(data);
-      const firstLabel = data.instances && data.instances.length > 0
-        ? data.instances[0].label
-        : '';
-      // Cache the label so toggleMute() knows which instance to connect to.
-      audioPreviewLabel = firstLabel;
-      connectRxLive(firstLabel);
-      connectFFT(firstLabel);
-      // Do NOT call startAudioPreview() here — browser blocks autoplay.
-      // The mute button click is the user gesture that starts playback.
+      // Note: setFocusedChannel() deliberately does NOT call
+      // startAudioPreview() when audio isn't already playing — the browser
+      // blocks autoplay, and the mute button click is the user gesture that
+      // starts playback.
       updateMuteBtn();
     })
     .catch(() => {
@@ -3261,37 +4078,6 @@ document.addEventListener('DOMContentLoaded', () => {
     muteBtn.addEventListener('click', toggleMute);
   }
 
-  // Frequency tune controls
-  const freqInput = document.getElementById('freq-input');
-  const freqBtn   = document.getElementById('freq-set-btn');
-
-  if (freqInput) {
-    freqInput.addEventListener('focus', () => {
-      freqInput._userEditing = true;
-      // Save whatever is currently shown, then clear so datalist shows all options
-      freqInput._valueBeforeFocus = freqInput.value;
-      freqInput.value = '';
-    });
-    freqInput.addEventListener('blur', () => {
-      freqInput._userEditing = false;
-      // If the user left the field empty (didn't pick or type anything), restore
-      // the last known frequency so the box doesn't go blank.
-      if (freqInput.value.trim() === '') {
-        freqInput.value = freqInput._lastKnownFreq || freqInput._valueBeforeFocus || '';
-      }
-    });
-    // Fires when the user picks an option from the datalist dropdown
-    freqInput.addEventListener('change', () => {
-      if (freqInput.value.trim() !== '') applyFrequency();
-    });
-    freqInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); applyFrequency(); }
-    });
-  }
-  if (freqBtn) {
-    freqBtn.addEventListener('click', applyFrequency);
-  }
-
   // ---------------------------------------------------------------------------
   // API reference modal
   // ---------------------------------------------------------------------------
@@ -3322,6 +4108,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const minEl = document.getElementById('api-ex-60min');
       if (minEl) minEl.textContent = `GET ${b}/api/images?minutes=60&complete=1&min_snr=3.3`;
 
+      // One channel (exact frequency + audio mode), and one frequency in any mode.
+      // Prefer a real configured channel so the example can be copied and run.
+      const exChan = [...railChannels.keys()][0] || '14230000_usb';
+      const exFreq = exChan.split('_')[0];
+      const chanEl = document.getElementById('api-ex-channel');
+      if (chanEl) chanEl.textContent = `GET ${b}/api/images?label=${exChan}&limit=50`;
+      const freqEl2 = document.getElementById('api-ex-freq');
+      if (freqEl2) freqEl2.textContent = `GET ${b}/api/images?freq=${exFreq}&limit=50`;
+
       // Explicit window (last hour as an example)
       const winEl = document.getElementById('api-ex-window');
       if (winEl) winEl.textContent = `GET ${b}/api/images?since=${nowMinus(60)}&until=${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}&complete=1`;
@@ -3346,6 +4141,12 @@ curl -s "${b}/api/images?minutes=60&complete=1&min_snr=3.3"
 
 # Explicit time window
 curl -s "${b}/api/images?since=${nowMinus(60)}&until=${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}&complete=1"
+
+# One channel only (exact frequency + audio mode)
+curl -s "${b}/api/images?label=${exChan}&limit=50"
+
+# One frequency, whichever audio mode (label and freq are mutually exclusive)
+curl -s "${b}/api/images?freq=${exFreq}&limit=50"
 
 # Download a single image file
 curl -O "${b}/images/2026-05-27_14-30-00_M1.png"
