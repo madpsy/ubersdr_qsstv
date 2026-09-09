@@ -46,7 +46,7 @@ All configuration is via environment variables in `docker-compose.yml`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `UBERSDR_URL` | `http://ubersdr:8080` | UberSDR base URL |
-| `UBERSDR_CHANNELS` | `14230000:usb` | Comma-separated `freq:mode` pairs, e.g. `14230000:usb,21335000:usb`. Each is decoded concurrently — see [Multiple channels](#multiple-channels) |
+| `UBERSDR_CHANNELS` | `14230000:usb,7171000:lsb` | Comma-separated `freq:mode` pairs — 20m and 40m SSTV calling frequencies by default. Each is decoded concurrently — see [Multiple channels](#multiple-channels) |
 | `UBERSDR_PASS` | _(empty)_ | UberSDR bypass password |
 | `OUTPUT_DIR` | `/data` | Output directory for images inside the container |
 | `WEB_PORT` | `6091` | Web gallery port (set to `0` to disable) |

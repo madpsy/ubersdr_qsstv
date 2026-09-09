@@ -267,6 +267,10 @@ header h1 {
   font-size: 0.6rem;
   color: #8fa5c8;
   font-variant-numeric: tabular-nums;
+  /* Same reserved width as #live-snr-value, for the same reason — otherwise
+     the reading slides left and right within the row as it updates. */
+  min-width: 7ch;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -369,7 +373,12 @@ header h1 {
   font-size: 0.95rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  min-width: 4.5ch;
+  /* Reserve the widest reading so the header never reflows as the value
+     changes.  Content runs from "—" to "-12.4 dB", which measures 6.51ch at
+     this size; 7ch leaves headroom for fonts with wider d/B glyphs.  The old
+     4.5ch was narrower than even "0.0 dB", so the bar shifted on every
+     update, not just on negative or two-digit readings. */
+  min-width: 7ch;
   text-align: right;
   white-space: nowrap;
 }

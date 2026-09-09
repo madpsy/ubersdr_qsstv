@@ -11,7 +11,9 @@ services:
       # own decoder process, and the web UI shows a live channel rail when two or
       # more are configured, e.g. "14230000:usb,21335000:usb,7171000:lsb".
       # Note each channel opens its own audio session on the UberSDR receiver.
-      UBERSDR_CHANNELS: "14230000:usb"
+      # Defaults: 20m and 40m SSTV calling frequencies.
+      # In Region 1 (Europe) 40m SSTV is often on 7165000 instead of 7171000.
+      UBERSDR_CHANNELS: "14230000:usb,7171000:lsb"
       # Uncomment and set as needed:
       # UBERSDR_PASS: ""
       # OUTPUT_DIR: "/data"
